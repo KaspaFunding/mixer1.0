@@ -1,0 +1,35 @@
+{
+  "name": "kaspa-mixer-standalone",
+  "version": "1.0.0",
+  "description": "Standalone Kaspa Mixer - CLI version",
+  "main": "index.js",
+  "bin": "index.js",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "websocket": "^1.0.35"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  },
+  "scripts": {
+    "prebuild": "node scripts/embed-wasm.js",
+    "build": "pkg . --targets node18-win-x64 --output mixer-cli.exe",
+    "build:all": "pkg . --targets node18-win-x64,node18-linux-x64,node18-macos-x64",
+    "start": "node index.js"
+  },
+  "pkg": {
+    "assets": [
+      "lib/**/*"
+    ],
+    "scripts": [
+      "index.js",
+      "lib/**/*.js",
+      "kaspa/kaspa.js"
+    ],
+    "targets": [
+      "node18-win-x64"
+    ],
+    "outputPath": "dist"
+  }
+}
+

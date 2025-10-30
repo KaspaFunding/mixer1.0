@@ -1,0 +1,45 @@
+# Builds / installers / caches
+dist/
+out/
+build/
+*.log
+*.tmp
+*.cache
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Binaries
+*.exe
+*.msi
+*.dmg
+*.pkg
+*.appx
+*.AppImage
+kaspa/kaspad.exe
+
+# Local env/config
+.env
+.env.*
+
+# App data (runtime)
+wallet.json
+sessions.json
+data/
+
+# Pool outputs
+pool/dist/
+
+node_modules/
+dist/
+*.exe
+.DS_Store
+.env
+lib/wasm-embedded.js
+# Note: kaspa/ directory is kept for development/build, but WASM is embedded in exe
+# Note: kaspad.exe should NOT be committed (user must download it)

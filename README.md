@@ -101,18 +101,6 @@ Runtime data is stored per-user in `%APPDATA%\Kaspa Mixer\` (Electron) and/or `%
 
 Back up this folder if you need to preserve sessions or wallet state. It contains private keys – protect it.
 
-## Security & Do-not-commit Checklist
-
-Before publishing to GitHub, ensure the repository does NOT contain:
-
-- Private keys, seed phrases, or exported JSON key files
-- `wallet.json`, `sessions.json`, or any data from `%APPDATA%/Kaspa Mixer` or `%USERPROFILE%/.kaspa-mixer`
-- `kaspad.exe` or any large binaries
-- Local environment files: `.env`, `.env.*`
-- Build artifacts: `dist/`, `out/`, `build/`, `win-unpacked/`
-- `node_modules/` (should be installed by users)
-
-This project includes a `.gitignore` to exclude these. Verify before pushing.
 
 ## Troubleshooting
 

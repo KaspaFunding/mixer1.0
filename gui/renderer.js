@@ -1221,6 +1221,30 @@ async function loadPoolConfig() {
     if (cfg.treasury?.privateKey && poolKeyStatus) {
       poolKeyStatus.textContent = '(configured)';
       poolKeyStatus.style.color = '#0f5132';
+      
+      // Show current key display section
+      const currentKeyDisplay = document.getElementById('pool-current-key-display');
+      const currentKeyValue = document.getElementById('pool-current-key-value');
+      const toggleKeyBtn = document.getElementById('pool-toggle-key-visibility');
+      const toggleKeyText = document.getElementById('pool-key-toggle-text');
+      
+      if (currentKeyDisplay && currentKeyValue && toggleKeyBtn && toggleKeyText) {
+        currentKeyDisplay.style.display = 'block';
+        
+        // Store the actual key (will be revealed on click)
+        currentKeyValue.dataset.actualKey = cfg.treasury.privateKey;
+        currentKeyValue.textContent = '••••••••••••••••';
+        currentKeyValue.dataset.revealed = 'false';
+        
+        // Reset toggle button state
+        toggleKeyText.textContent = 'Show';
+      }
+    } else {
+      // Hide current key display if no key configured
+      const currentKeyDisplay = document.getElementById('pool-current-key-display');
+      if (currentKeyDisplay) {
+        currentKeyDisplay.style.display = 'none';
+      }
     }
   }
 }
@@ -1341,6 +1365,64 @@ if (poolCopyKeyBtn) {
   });
 }
 
+// Toggle current key visibility
+const poolToggleKeyVisibilityBtn = document.getElementById('pool-toggle-key-visibility');
+if (poolToggleKeyVisibilityBtn) {
+  poolToggleKeyVisibilityBtn.addEventListener('click', () => {
+    const currentKeyValue = document.getElementById('pool-current-key-value');
+    const toggleKeyText = document.getElementById('pool-key-toggle-text');
+    
+    if (currentKeyValue && toggleKeyText) {
+      const isRevealed = currentKeyValue.dataset.revealed === 'true';
+      const actualKey = currentKeyValue.dataset.actualKey;
+      
+      if (isRevealed) {
+        // Hide the key
+        currentKeyValue.textContent = '••••••••••••••••';
+        currentKeyValue.style.color = 'var(--text-secondary)';
+        toggleKeyText.textContent = 'Show';
+        currentKeyValue.dataset.revealed = 'false';
+      } else {
+        // Show the key
+        if (actualKey) {
+          currentKeyValue.textContent = actualKey;
+          currentKeyValue.style.color = 'var(--text-primary)';
+          toggleKeyText.textContent = 'Hide';
+          currentKeyValue.dataset.revealed = 'true';
+        }
+      }
+    }
+  });
+}
+
+// Copy current key to clipboard
+const poolCopyCurrentKeyBtn = document.getElementById('pool-copy-current-key');
+if (poolCopyCurrentKeyBtn) {
+  poolCopyCurrentKeyBtn.addEventListener('click', async () => {
+    const currentKeyValue = document.getElementById('pool-current-key-value');
+    if (currentKeyValue) {
+      const actualKey = currentKeyValue.dataset.actualKey;
+      if (actualKey) {
+        try {
+          await navigator.clipboard.writeText(actualKey);
+          showMessage('Private key copied to clipboard', 'success');
+        } catch (err) {
+          // Fallback for older browsers
+          const textArea = document.createElement('textarea');
+          textArea.value = actualKey;
+          textArea.style.position = 'fixed';
+          textArea.style.opacity = '0';
+          document.body.appendChild(textArea);
+          textArea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textArea);
+          showMessage('Private key copied to clipboard', 'success');
+        }
+      }
+    }
+  });
+}
+
 // Use generated key (fill input and save)
 if (poolUseKeyBtn) {
   poolUseKeyBtn.addEventListener('click', async () => {
@@ -1364,6 +1446,21 @@ if (poolUseKeyBtn) {
         poolKeyStatus.textContent = '(configured)';
         poolKeyStatus.style.color = '#0f5132';
       }
+      
+      // Update current key display with the generated key
+      const currentKeyDisplay = document.getElementById('pool-current-key-display');
+      const currentKeyValue = document.getElementById('pool-current-key-value');
+      const toggleKeyText = document.getElementById('pool-key-toggle-text');
+      
+      if (currentKeyDisplay && currentKeyValue && toggleKeyText) {
+        currentKeyDisplay.style.display = 'block';
+        currentKeyValue.dataset.actualKey = key;
+        currentKeyValue.textContent = '••••••••••••••••';
+        currentKeyValue.style.color = 'var(--text-secondary)';
+        currentKeyValue.dataset.revealed = 'false';
+        toggleKeyText.textContent = 'Show';
+      }
+      
       // Hide generated key info after use
       poolGeneratedKeyInfo.style.display = 'none';
       showMessage('Treasury key saved to config', 'success');
@@ -1387,6 +1484,21 @@ if (poolSaveKeyBtn) {
         poolKeyStatus.textContent = '(configured)';
         poolKeyStatus.style.color = '#0f5132';
       }
+      
+      // Update current key display with new key
+      const currentKeyDisplay = document.getElementById('pool-current-key-display');
+      const currentKeyValue = document.getElementById('pool-current-key-value');
+      const toggleKeyText = document.getElementById('pool-key-toggle-text');
+      
+      if (currentKeyDisplay && currentKeyValue && toggleKeyText) {
+        currentKeyDisplay.style.display = 'block';
+        currentKeyValue.dataset.actualKey = key;
+        currentKeyValue.textContent = '••••••••••••••••';
+        currentKeyValue.style.color = 'var(--text-secondary)';
+        currentKeyValue.dataset.revealed = 'false';
+        toggleKeyText.textContent = 'Show';
+      }
+      
       showMessage('Treasury key saved to config', 'success');
     } else {
       showMessage(res.error || 'Failed to save key', 'error');

@@ -1,4 +1,4 @@
-import { Header, PoW, type RpcClient, type IRawBlock } from "../../wasm/kaspa"
+import { Header, PoW, type RpcClient, type IRawBlock, type IRawHeader } from "../../wasm/kaspa"
 import Jobs from "./jobs"
 
 export default class Templates {
@@ -26,6 +26,10 @@ export default class Templates {
   getPoW (hash: string) {
     return this.templates.get(hash)?.[1]
   }
+  
+  getHeader (hash: string): IRawHeader | undefined {
+    return this.templates.get(hash)?.[0].header
+  }
 
   async submit (hash: string, nonce: bigint) {
     const template = this.templates.get(hash)![0]
@@ -42,7 +46,7 @@ export default class Templates {
     } else throw Error('Block is on IBD/route is full')
   }
 
-  async register (callback: (id: string, hash: string, timestamp: bigint) => void) {
+  async register (callback: (id: string, hash: string, timestamp: bigint, header: IRawHeader) => void) {
     this.rpc.addEventListener('new-block-template', async () => {
       const { block } = await this.rpc.getBlockTemplate({
         payAddress: this.address,
@@ -60,7 +64,7 @@ export default class Templates {
         this.jobs.expireNext()
       }
 
-      callback(id, proofOfWork.prePoWHash, block.header.timestamp)
+      callback(id, proofOfWork.prePoWHash, block.header.timestamp, block.header)
     })
 
     await this.rpc.subscribeNewBlockTemplate()

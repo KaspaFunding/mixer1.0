@@ -17,6 +17,7 @@ export default class Api extends Server {
   constructor (port: number, treasury: Treasury, stratum: Stratum, database: Database) {
     super({
       '/status': () => this.status(),
+      '/miners': () => this.getMiners(),
       '/miner': ({ address }) => this.getMiner(address)
     }, port)
 
@@ -33,9 +34,41 @@ export default class Api extends Server {
     }
   }
 
+  private getMiners () {
+    const miners = Array.from(this.stratum.miners.keys()).map((address) => {
+      const miner = this.database.getMiner(address)
+      const connections = this.stratum.miners.get(address)
+      
+      const workers = connections ? Array.from(connections).flatMap((session) => {
+        const { agent, difficulty, workers } = session.data
+
+        return Array.from(workers, ([, workerName ]) => ({
+            name: workerName,
+            agent,
+            difficulty: difficulty.toNumber()
+        }))
+      }) : []
+
+      // Format address with kaspa: prefix for display
+      const formattedAddress = address.startsWith('kaspa:') ? address : `kaspa:${address}`
+
+      return {
+        address: formattedAddress,
+        balance: miner.balance.toString(),
+        connections: connections?.size ?? 0,
+        workers: workers.length,
+        workersDetail: workers
+      }
+    })
+
+    return { miners }
+  }
+
   private getMiner (address: string) {
-    const miner = this.database.getMiner(address)
-    const connections = this.stratum.miners.get(address)
+    // Remove kaspa: prefix if present for internal lookup (addresses stored without prefix)
+    const addressWithoutPrefix = address.replace(/^(kaspa:?|kaspatest:?)/i, '')
+    const miner = this.database.getMiner(addressWithoutPrefix)
+    const connections = this.stratum.miners.get(addressWithoutPrefix)
 
     const workers = connections ? Array.from(connections).flatMap((session) => {
       const { agent, difficulty, workers } = session.data
@@ -47,7 +80,11 @@ export default class Api extends Server {
       }))
     }) : []
 
+    // Format address with kaspa: prefix for display
+    const formattedAddress = addressWithoutPrefix.startsWith('kaspa:') ? addressWithoutPrefix : `kaspa:${addressWithoutPrefix}`
+
     return {
+      address: formattedAddress,
       balance: miner.balance.toString(),
       connections: connections?.size ?? 0,
       workers

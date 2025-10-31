@@ -1,5 +1,5 @@
 export interface RequestMappings {
-  'mining.subscribe': [ string, string ] // miner identifier & protocol
+  'mining.subscribe': [ string?, string? ] // miner identifier (optional) & protocol (optional) - Iceriver may send empty
   'mining.authorize': [ string, string ] // address.name & passwd
   'mining.submit': [ string, string, string ] // address.name of worker & jobid & nonce 
 }
@@ -30,7 +30,9 @@ export class StratumError extends Error {
     super(code)
     this.code = ErrorCodes[code]
 
+    // @ts-ignore - captureStackTrace is a V8-specific feature available at runtime
     if (Error.captureStackTrace) {
+      // @ts-ignore - captureStackTrace is a V8-specific feature available at runtime
       Error.captureStackTrace(this, StratumError)
     }
   }
@@ -45,13 +47,13 @@ export class StratumError extends Error {
 }
 
 export interface ResponseMappings {
-  "mining.subscribe": [ boolean, string ] // EthereumStratum/1.0.0
+  "mining.subscribe": [ boolean | null, string, number? ] // Standard: [true, 'EthereumStratum/1.0.0'], Bitmain: [null, extranonce, size]
   'mining.authorize': boolean // TRUE
   'mining.submit': boolean // TRUE
 }
 
 export interface Response<M extends keyof RequestMappings = keyof RequestMappings> {
-  id: number
+  id: number | null  // Can be null for notifications/errors
   result: ResponseMappings[M] | null
   error: null | [
     number, // Error code
@@ -61,9 +63,9 @@ export interface Response<M extends keyof RequestMappings = keyof RequestMapping
 }
 
 export interface EventMappings {
-  'set_extranonce': [ string ] // 2 bytes
+  'set_extranonce': [ string ] | [ string, number ] // Standard: [extranonce], Bitmain: [extranonce, size]
   'mining.set_difficulty': [ number ] // difficulty
-  'mining.notify': [ string, string ] // job id + header with timestamp
+  'mining.notify': [ string, string ] | [ string, string, bigint ] // job id + header, Bitmain: + timestamp
 }
 
 export interface Event<M extends keyof EventMappings = keyof EventMappings> {
@@ -73,7 +75,8 @@ export interface Event<M extends keyof EventMappings = keyof EventMappings> {
 
 export function validateRequest (request: any): request is Request {
   return typeof request === 'object' &&
-    typeof request.id === 'number' &&
+    request !== null &&
+    (typeof request.id === 'number' || request.id === null) && // Some ASICs send null id
     typeof request.method === 'string' &&
     Array.isArray(request.params)
 }
@@ -81,10 +84,13 @@ export function validateRequest (request: any): request is Request {
 export function parseMessage (message: string) {
   try {
     const parsedMessage = JSON.parse(message)
-    if (!validateRequest(parsedMessage)) return undefined
-
+    
+    if (!validateRequest(parsedMessage)) {
+      return undefined
+    }
+    
     return parsedMessage
-  } catch {
+  } catch (err) {
     return undefined
   }
 }

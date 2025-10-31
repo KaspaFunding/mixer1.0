@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     start: (opts) => ipcRenderer.invoke('pool:start', opts),
     stop: () => ipcRenderer.invoke('pool:stop'),
     status: () => ipcRenderer.invoke('pool:status'),
+    generateKeypair: () => ipcRenderer.invoke('pool:generate-keypair'),
     config: {
       get: () => ipcRenderer.invoke('pool:config:get'),
       update: (partial) => ipcRenderer.invoke('pool:config:update', partial)

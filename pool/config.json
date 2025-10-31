@@ -1,7 +1,7 @@
 {
   "node": "ws://127.0.0.1:17110",
   "treasury": {
-    "privateKey": "",
+    "privateKey": "ae2d2e34d2d9321afefa2444698aa98ec370289674c8bf1a500b74332d32b2a7",
     "fee": 1,
     "rewarding": {
       "paymentThreshold": "1000000000"
@@ -14,7 +14,7 @@
   "stratum": {
     "hostName": "0.0.0.0",
     "port": 7777,
-    "difficulty": "2"
+    "difficulty": "4096"
   },
   "api": {
     "enabled": true,

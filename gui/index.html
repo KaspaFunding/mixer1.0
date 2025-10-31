@@ -17,9 +17,36 @@
           <span class="status-dot"></span>
           <span id="node-status-text">Checking...</span>
         </div>
+        <button id="theme-toggle" class="theme-toggle" title="Toggle Dark Mode" aria-label="Toggle Dark Mode">🌙</button>
         <button id="node-status-btn" class="btn btn-secondary">Node Details</button>
       </div>
     </header>
+
+    <!-- Node Status Modal -->
+    <div id="node-status-modal" class="modal hidden">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <h2>Node Status Details</h2>
+          <button class="modal-close" id="close-node-modal">&times;</button>
+        </div>
+        <div class="modal-body" id="node-status-content">
+          <div class="loading">Loading node status...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Miner Detail Modal -->
+    <div id="miner-modal" class="modal hidden">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <h2>Miner Details</h2>
+          <button class="modal-close" id="close-miner-modal">&times;</button>
+        </div>
+        <div class="modal-body" id="miner-content">
+          <div class="loading">Loading miner details...</div>
+        </div>
+      </div>
+    </div>
 
     <!-- Main Content -->
     <main class="app-main">
@@ -38,29 +65,75 @@
           <h2>Active Sessions</h2>
           <button id="refresh-sessions" class="btn btn-secondary">Refresh</button>
         </div>
+        
+        <!-- Session Management Controls -->
+        <div class="collapsible-section">
+          <div class="collapsible-header" data-target="session-controls-panel">
+            <h3>Session Management Controls</h3>
+            <span class="collapse-icon">▼</span>
+          </div>
+          <div class="session-controls collapsible-content" id="session-controls-panel">
+            <input type="text" id="session-search" class="session-search" placeholder="Search by address, TX ID, or session ID..." />
+            <div class="session-filter-group">
+              <button class="session-filter active" data-filter="all">All</button>
+              <button class="session-filter" data-filter="waiting">Waiting</button>
+              <button class="session-filter" data-filter="deposit_received">Deposit</button>
+              <button class="session-filter" data-filter="intermediate_confirmed">Confirmed</button>
+              <button class="session-filter" data-filter="confirmed">Completed</button>
+              <button class="session-filter" data-filter="error">Error</button>
+            </div>
+            <select id="session-sort" class="session-sort">
+              <option value="newest">Newest First</option>
+              <option value="oldest">Oldest First</option>
+              <option value="amount-high">Amount (High to Low)</option>
+              <option value="amount-low">Amount (Low to High)</option>
+              <option value="status">By Status</option>
+            </select>
+          </div>
+        </div>
+        
         <div id="sessions-list" class="sessions-list">
           <div class="loading">Loading sessions...</div>
         </div>
-        <div id="debug-info" class="debug-info hidden">
-          <h3>Debug Info</h3>
-          <pre id="debug-content"></pre>
+        
+        <!-- Batch Actions -->
+        <div id="batch-actions" class="batch-actions hidden">
+          <span id="selected-count">0 selected</span>
+          <button id="batch-export" class="btn btn-secondary">Export Keys (Selected)</button>
+          <button id="batch-delete" class="btn btn-danger">Delete (Selected)</button>
+        </div>
+        
+        <div id="debug-info" class="collapsible-section hidden">
+          <div class="collapsible-header" data-target="debug-content-panel">
+            <h3>Debug Info</h3>
+            <span class="collapse-icon">▼</span>
+          </div>
+          <div class="collapsible-content" id="debug-content-panel">
+            <pre id="debug-content"></pre>
+          </div>
         </div>
       </div>
 
       <!-- Create Session Tab -->
       <div id="create-tab" class="tab-content">
-        <h2>Create New Mixing Session</h2>
         <form id="create-session-form" class="create-form">
-          <div class="form-group">
-            <label>Destinations (up to 10)</label>
-            <div id="destinations-container">
-              <div class="destination-row">
-                <input type="text" placeholder="Kaspa address" class="address-input" required>
-                <input type="number" step="0.00000001" min="0.00001" placeholder="Amount (KAS)" class="amount-input" required>
-                <button type="button" class="btn btn-danger remove-dest">Remove</button>
+          <div class="collapsible-section">
+            <div class="collapsible-header" data-target="destinations-panel">
+              <label style="margin: 0; font-weight: 600;">Destinations (up to 10)</label>
+              <span class="collapse-icon">▼</span>
+            </div>
+            <div class="collapsible-content" id="destinations-panel">
+              <div class="form-group" style="margin-top: 0.75rem;">
+                <div id="destinations-container">
+                  <div class="destination-row">
+                    <input type="text" placeholder="Kaspa address" class="address-input" required>
+                    <input type="number" step="0.00000001" min="0.00001" placeholder="Amount (KAS)" class="amount-input" required>
+                    <button type="button" class="btn btn-danger remove-dest">Remove</button>
+                  </div>
+                </div>
+                <button type="button" id="add-destination" class="btn btn-secondary">+ Add Destination</button>
               </div>
             </div>
-            <button type="button" id="add-destination" class="btn btn-secondary">+ Add Destination</button>
           </div>
           <div class="form-group">
             <label>Total Amount: <span id="total-amount">0.00000000</span> KAS</label>
@@ -71,11 +144,11 @@
 
       <!-- Wallet Tab -->
       <div id="wallet-tab" class="tab-content">
-        <div id="wallet-not-imported" class="wallet-section">
+        <div id="wallet-not-imported" class="wallet-section wallet-compact">
           <h2>Import Wallet</h2>
-          <p>Import your private key to use the built-in wallet</p>
-          <form id="import-wallet-form" class="wallet-form">
-            <div class="form-group">
+          <p style="margin-bottom: 1rem;">Import your private key to use the built-in wallet</p>
+          <form id="import-wallet-form" class="wallet-form-compact">
+            <div class="form-group-compact">
               <label>Private Key (Hex)</label>
               <input type="password" id="private-key-input" placeholder="Enter private key" required>
             </div>
@@ -83,37 +156,43 @@
           </form>
         </div>
 
-        <div id="wallet-imported" class="wallet-section hidden">
-          <div class="section-header">
-            <h2>Wallet</h2>
-          </div>
-          <div id="wallet-info" class="wallet-info">
-            <div class="info-row">
-              <span>Address:</span>
-              <div class="address-container">
-                <span id="wallet-address" class="address-text"></span>
-                <button id="copy-wallet-address" class="btn btn-secondary btn-sm">Copy</button>
+        <div id="wallet-imported" class="wallet-grid-container hidden">
+          <!-- Balance Card -->
+          <div class="wallet-card wallet-balance-card">
+            <div class="wallet-card-header">
+              <h3>Balance</h3>
+              <div class="wallet-card-actions">
+                <button id="refresh-balance" class="btn btn-secondary btn-sm">Refresh</button>
+                <button id="wallet-remove-inline" class="btn btn-danger btn-sm">Remove</button>
               </div>
             </div>
-          </div>
-          <div id="wallet-balance" class="wallet-balance">
-            <div class="balance-item">
-              <span>Balance:</span>
-              <span id="balance-amount" class="balance-value">Loading...</span>
-            </div>
-            <div>
-              <button id="refresh-balance" class="btn btn-secondary" style="margin-right:8px;">Refresh</button>
-              <button id="wallet-remove-inline" class="btn btn-danger">Remove Wallet</button>
+            <div class="wallet-balance-display">
+              <span id="balance-amount" class="balance-value-compact">Loading...</span>
             </div>
           </div>
-          <div class="wallet-send">
-            <h3>Send Funds</h3>
-            <form id="send-funds-form" class="wallet-form">
-              <div class="form-group">
+
+          <!-- Address Card -->
+          <div class="wallet-card wallet-address-card">
+            <div class="wallet-card-header">
+              <h3>Address</h3>
+              <button id="copy-wallet-address" class="btn btn-secondary btn-sm">Copy</button>
+            </div>
+            <div class="wallet-address-display">
+              <span id="wallet-address" class="address-text-compact"></span>
+            </div>
+          </div>
+
+          <!-- Send Funds Card -->
+          <div class="wallet-card wallet-send-card">
+            <div class="wallet-card-header">
+              <h3>Send Funds</h3>
+            </div>
+            <form id="send-funds-form" class="wallet-form-compact">
+              <div class="form-group-compact">
                 <label>To Address</label>
-                <input type="text" id="send-address" placeholder="Kaspa address" required>
+                <input type="text" id="send-address" placeholder="kaspa:..." required>
               </div>
-              <div class="form-group">
+              <div class="form-group-compact">
                 <label>Amount (KAS)</label>
                 <input type="number" step="0.00000001" min="0.00001" id="send-amount" placeholder="0.00" required>
               </div>
@@ -125,16 +204,16 @@
 
       <!-- Mining Pool Tab -->
       <div id="pool-tab" class="tab-content">
-        <h2>Mining Pool</h2>
-        <div class="wallet-section" style="max-width:900px;">
+        <div class="pool-content-wrapper">
           <div class="sessions-list pool-grid-top" style="margin-top: 0;">
-            <div class="session-card pool-card">
-              <div class="session-header">
+            <div class="session-card pool-card collapsible-section">
+              <div class="session-header collapsible-header" data-target="pool-settings-panel">
                 <div>
                   <div class="session-id">Settings</div>
                 </div>
+                <span class="collapse-icon">▼</span>
               </div>
-              <div class="session-details">
+              <div class="session-details collapsible-content" id="pool-settings-panel">
                 <div class="form-group">
                   <label>Port</label>
                   <input type="number" id="pool-port" value="7777" min="1" max="65535" />
@@ -142,35 +221,73 @@
                 <div class="form-group">
                   <label>Difficulty</label>
                   <input type="number" id="pool-difficulty" value="1" min="1" step="1" />
-                  <div class="helper-text" style="margin-top:6px; color:#666; font-size:0.85rem; line-height:1.35;">
-                    <div><strong>ASIC guidance:</strong></div>
-                    <div>IceRiver KS0–KS0 Pro & Ultra: <code>256–1024</code></div>
-                    <div>IceRiver KS1/KS2/KS2 Lite/KS7: <code>1024–4096</code></div>
-                    <div>IceRiver KS3L/KS3M/KS3 Pro: <code>4096–16384</code></div>
-                    <div>IceRiver KS3/KS5L/KS5M/KS7: <code>16384–32768</code></div>
+                  <div class="asic-guidance" style="margin-top:10px;">
+                    <div style="margin-bottom:8px; font-size:0.85rem; font-weight:500;" class="helper-text">
+                      <strong>ASIC Quick Select:</strong> Click to set recommended difficulty
+                    </div>
+                    <div class="asic-buttons">
+                      <button type="button" class="asic-chip" data-difficulty="256" data-model="KS0/KS0 Pro/KS0 Ultra">
+                        <span class="asic-model">KS0 Series</span>
+                        <span class="asic-range">256–1024</span>
+                      </button>
+                      <button type="button" class="asic-chip" data-difficulty="1024" data-model="KS1/KS2/KS2Lite">
+                        <span class="asic-model">KS1/KS2/KS2Lite</span>
+                        <span class="asic-range">1024–4096</span>
+                      </button>
+                      <button type="button" class="asic-chip" data-difficulty="4096" data-model="KS3L/KS3M/KS3 Pro">
+                        <span class="asic-model">KS3L/KS3M/KS3 Pro</span>
+                        <span class="asic-range">4096–16384</span>
+                      </button>
+                      <button type="button" class="asic-chip" data-difficulty="16384" data-model="KS3/KS5L/KS5M/KS7">
+                        <span class="asic-model">KS3/KS5/KS7 Series</span>
+                        <span class="asic-range">16384–32768</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
 
-            <div class="session-card pool-card">
-              <div class="session-header">
+            <div class="session-card pool-card collapsible-section">
+              <div class="session-header collapsible-header" data-target="pool-treasury-panel">
                 <div>
                   <div class="session-id">Treasury & Threshold</div>
                 </div>
+                <span class="collapse-icon">▼</span>
               </div>
-              <div class="session-details">
+              <div class="session-details collapsible-content" id="pool-treasury-panel">
                 <div class="form-group">
                   <label>Payment Threshold (KAS)</label>
                   <input type="number" id="pool-threshold-kas" value="10" min="0" step="0.00000001" />
                 </div>
                 <div class="form-group">
-                  <label>Treasury Private Key <small id="pool-key-status" style="color:#666; font-weight:400;">(not configured)</small></label>
+                  <label>Treasury Private Key <small id="pool-key-status" class="helper-text" style="font-weight:400;">(not configured)</small></label>
                   <div style="display:flex; gap:8px; align-items:center;">
                     <input type="password" id="pool-treasury-key" placeholder="Paste private key (hex)" style="flex:1;" />
+                    <button id="pool-generate-key" class="btn btn-secondary">Generate</button>
                     <button id="pool-save-key" class="btn btn-secondary">Save</button>
                   </div>
-                  <div style="margin-top:6px; color:#666; font-size:0.85rem; line-height:1.3;">
+                  <div id="pool-generated-key-info" class="generated-key-info" style="display:none;">
+                    <div style="margin-bottom:8px;">
+                      <strong>Generated Address:</strong>
+                      <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
+                        <code id="pool-generated-address" style="flex:1; font-size:0.9rem; word-break:break-all;"></code>
+                        <button id="pool-copy-address" class="btn btn-secondary" style="padding:6px 12px; font-size:0.85rem;">Copy</button>
+                      </div>
+                    </div>
+                    <div style="margin-bottom:8px;">
+                      <strong>Private Key:</strong>
+                      <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
+                        <code id="pool-generated-key" style="flex:1; font-size:0.9rem; word-break:break-all;"></code>
+                        <button id="pool-copy-key" class="btn btn-secondary" style="padding:6px 12px; font-size:0.85rem;">Copy</button>
+                        <button id="pool-use-key" class="btn btn-primary" style="padding:6px 12px; font-size:0.85rem;">Use This Key</button>
+                      </div>
+                    </div>
+                    <div class="warning-text" style="font-size:0.85rem; margin-top:6px;">
+                      ⚠ <strong>Important:</strong> Save this private key securely! You will need it to access any funds sent to this address.
+                    </div>
+                  </div>
+                  <div class="helper-text" style="margin-top:6px; font-size:0.85rem; line-height:1.3;">
                     This key authorizes the pool's treasury to send rewards. Payouts are
                     generated by the pool and transferred to the miner's Kaspa address configured
                     in your mining software. Keep this key secure.
@@ -179,13 +296,14 @@
               </div>
             </div>
 
-            <div class="session-card pool-card full">
-              <div class="session-header">
+            <div class="session-card pool-card full collapsible-section">
+              <div class="session-header collapsible-header" data-target="pool-controls-panel">
                 <div>
                   <div class="session-id">Controls</div>
                 </div>
+                <span class="collapse-icon">▼</span>
               </div>
-              <div class="session-details">
+              <div class="session-details collapsible-content" id="pool-controls-panel">
                 <div class="detail-row" style="align-items:center;">
                   <span class="detail-label">Status:</span>
                   <span id="pool-status-text">Stopped</span>
@@ -197,26 +315,29 @@
               </div>
             </div>
           </div>
-          <div class="sessions-list pool-grid" style="margin-top: 12px;">
-            <div class="session-card connect-card">
-              <div class="session-header">
+          <div class="sessions-list pool-grid">
+            <div class="session-card connect-card collapsible-section">
+              <div class="session-header collapsible-header" data-target="pool-stats-panel">
                 <div>
                   <div class="session-id">Pool Stats</div>
                 </div>
+                <span class="collapse-icon">▼</span>
               </div>
-              <div class="session-details">
+              <div class="session-details collapsible-content" id="pool-stats-panel">
                 <div class="detail-row"><span class="detail-label">Network:</span><span id="pool-network">-</span></div>
                 <div class="detail-row"><span class="detail-label">Miners:</span><span id="pool-miners">0</span></div>
                 <div class="detail-row"><span class="detail-label">Workers:</span><span id="pool-workers">0</span></div>
+                <div class="detail-row"><span class="detail-label">Active Connections:</span><span id="pool-connections">0</span></div>
               </div>
             </div>
-            <div class="session-card">
-              <div class="session-header">
+            <div class="session-card collapsible-section">
+              <div class="session-header collapsible-header" data-target="pool-connect-panel">
                 <div>
                   <div class="session-id">How to Connect</div>
                 </div>
+                <span class="collapse-icon">▼</span>
               </div>
-              <div class="session-details" style="display:flex; flex-direction:column; gap:10px;">
+              <div class="session-details collapsible-content" id="pool-connect-panel" style="display:flex; flex-direction:column; gap:10px;">
                 <div>
                   <div class="detail-label" style="margin-bottom:6px;">Local PC (this machine)</div>
                   <div class="code-box"><code id="pool-connect-local">stratum+tcp://127.0.0.1:7777</code></div>
@@ -233,15 +354,38 @@
                   <div class="detail-label" style="margin-bottom:6px;">Password</div>
                   <div class="code-box"><code>x</code></div>
                 </div>
-                <div style="font-size:0.85rem; color:#666;">
+                <div style="font-size:0.85rem;" class="helper-text">
                   Tip: On ASICs, set URL to the LAN value (your PC's IP) and use your Kaspa payout address as the username.
                 </div>
               </div>
             </div>
           </div>
-          <div class="debug-info" style="margin-top:1rem;">
-            <h3>Recent Output</h3>
-            <pre id="pool-output"></pre>
+          <!-- Pool Dashboard: Workers -->
+          <div class="session-card pool-card full collapsible-section">
+            <div class="session-header collapsible-header" data-target="pool-workers-panel">
+              <div>
+                <div class="session-id">Active Workers Dashboard</div>
+              </div>
+              <div style="display:flex; gap:0.5rem; align-items:center;">
+                <button id="refresh-workers" class="btn btn-secondary" style="padding: 0.5rem 1rem;">Refresh</button>
+                <span class="collapse-icon">▼</span>
+              </div>
+            </div>
+            <div class="session-details collapsible-content" id="pool-workers-panel">
+              <div id="workers-list" class="workers-list">
+                <div class="loading">No active workers. Start mining to see workers here.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="collapsible-section">
+            <div class="collapsible-header" data-target="pool-output-panel">
+              <h3>Recent Output</h3>
+              <span class="collapse-icon">▼</span>
+            </div>
+            <div class="collapsible-content debug-info" id="pool-output-panel">
+              <pre id="pool-output"></pre>
+            </div>
           </div>
         </div>
       </div>

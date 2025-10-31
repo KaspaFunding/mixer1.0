@@ -11,6 +11,7 @@ const { createSession, getSession, getAllSessions } = require('./lib/session-man
 const { deleteSession } = require('./lib/database');
 const { checkNodeStatus } = require('./lib/rpc-client');
 const { importPrivateKey, getWalletInfo, getWalletBalance, sendFromWallet, removeWallet } = require('./lib/wallet');
+const { kaspa, KASPA_NETWORK } = require('./lib/config');
 const { startMonitoring, startIntermediateMonitoring } = require('./lib/monitor');
 const { processFinalPayout } = require('./lib/payout');
 
@@ -77,7 +78,53 @@ function readPoolConfig() {
   const cfgPath = ensureUserConfig();
   try {
     const raw = fs.readFileSync(cfgPath, 'utf-8');
-    return JSON.parse(raw);
+    const config = JSON.parse(raw);
+    
+    let configModified = false;
+    
+    // Validate and clean treasury private key if present
+    if (config.treasury && config.treasury.privateKey) {
+      const key = String(config.treasury.privateKey).trim();
+      if (key) {
+        // Validate the key format - must be hex string
+        if (!/^[0-9a-fA-F]+$/.test(key)) {
+          console.warn('[Pool Config] Invalid private key format (contains non-hex characters), clearing...');
+          config.treasury.privateKey = '';
+          configModified = true;
+        } else if (key.length !== 64) {
+          // Private keys are typically 32 bytes = 64 hex characters
+          console.warn(`[Pool Config] Invalid private key length (${key.length} chars, expected 64), clearing...`);
+          config.treasury.privateKey = '';
+          configModified = true;
+        } else {
+          // Validate using Kaspa library to ensure it's a valid secp256k1 key
+          try {
+            const privateKey = new kaspa.PrivateKey(key);
+            const keypair = kaspa.Keypair.fromPrivateKey(privateKey);
+            // Key is valid, keep it trimmed
+            config.treasury.privateKey = key;
+          } catch (err) {
+            console.warn(`[Pool Config] Invalid private key (secp256k1 validation failed): ${err.message}, clearing...`);
+            config.treasury.privateKey = '';
+            configModified = true;
+          }
+        }
+      } else {
+        config.treasury.privateKey = '';
+      }
+    }
+    
+    // Write back if we modified the config (cleared invalid key)
+    if (configModified) {
+      try {
+        fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+        console.log('[Pool Config] Invalid private key cleared from config file');
+      } catch (writeErr) {
+        console.error('[Pool Config] Failed to save cleaned config:', writeErr.message);
+      }
+    }
+    
+    return config;
   } catch (e) {
     return null;
   }
@@ -101,8 +148,26 @@ function writePoolConfig(partial) {
       next.treasury.rewarding.paymentThreshold = String(partial.paymentThresholdSompi);
     }
     if (typeof partial.treasuryPrivateKey === 'string') {
-      next.treasury = next.treasury || {};
-      next.treasury.privateKey = partial.treasuryPrivateKey;
+      const key = partial.treasuryPrivateKey.trim();
+      if (key) {
+        // Validate the private key before saving
+        try {
+          const privateKey = new kaspa.PrivateKey(key);
+          // Verify it's valid by creating a keypair (this will throw if invalid)
+          const keypair = kaspa.Keypair.fromPrivateKey(privateKey);
+          // Key is valid, save it - ensure it's trimmed and normalized (lowercase hex)
+          next.treasury = next.treasury || {};
+          // Normalize to lowercase hex for consistency
+          next.treasury.privateKey = key.toLowerCase();
+          console.log('[Pool Config] Saved valid treasury private key (length:', key.length, ')');
+        } catch (err) {
+          throw new Error(`Invalid private key: ${err.message}. Key must be a valid hex-encoded secp256k1 private key.`);
+        }
+      } else {
+        // Empty key - clear it
+        next.treasury = next.treasury || {};
+        next.treasury.privateKey = '';
+      }
     }
   }
   fs.writeFileSync(cfgPath, JSON.stringify(next, null, 2));
@@ -270,10 +335,43 @@ function startPool(opts = {}) {
   if (poolProcess && (poolProcess.killed || poolStatus.exited)) {
     poolProcess = null;
   }
+  
+  // Validate treasury private key before starting
+  const cfg = readPoolConfig();
+  const treasuryKey = cfg?.treasury?.privateKey;
+  if (!treasuryKey || typeof treasuryKey !== 'string' || !treasuryKey.trim()) {
+    return { 
+      started: false, 
+      error: 'Treasury private key is required. Please generate or enter a valid private key in the Mining Pool settings.' 
+    };
+  }
+  
+  // Validate the key format
+  const key = treasuryKey.trim();
+  if (key.length !== 64 || !/^[0-9a-fA-F]+$/.test(key)) {
+    return { 
+      started: false, 
+      error: 'Invalid treasury private key format. The key must be a 64-character hex string. Please generate a new key using the Generate button.' 
+    };
+  }
+  
+  // Validate using Kaspa library
+  try {
+    const privateKey = new kaspa.PrivateKey(key);
+    const keypair = kaspa.Keypair.fromPrivateKey(privateKey);
+    // Validation passed
+  } catch (err) {
+    return { 
+      started: false, 
+      error: `Invalid treasury private key: ${err.message}. Please generate a new key using the Generate button.` 
+    };
+  }
+  
   const port = Number(opts.port || 7777);
   const cwd = path.join(__dirname, 'pool');
   const bunCmd = process.platform === 'win32' ? 'bun.exe' : 'bun';
   const bun = bunCmd; // assume in PATH; otherwise user should install Bun
+  
   // Persist desired config before start
   try {
     writePoolConfig({
@@ -281,7 +379,33 @@ function startPool(opts = {}) {
       difficulty: opts.difficulty,
       paymentThresholdSompi: opts.paymentThresholdSompi
     });
-  } catch (_) {}
+    
+    // CRITICAL: Copy user config to pool directory so the pool can read it
+    // The pool reads from ./config.json relative to its directory
+    const userConfigPath = ensureUserConfig();
+    const poolConfigPath = path.join(cwd, 'config.json');
+    
+    // Ensure the user config is up to date and has the validated private key
+    const userConfig = readPoolConfig();
+    
+    // Write the user config to the pool directory
+    if (userConfig) {
+      // Ensure private key is trimmed and properly formatted
+      if (userConfig.treasury && userConfig.treasury.privateKey) {
+        userConfig.treasury.privateKey = String(userConfig.treasury.privateKey).trim().toLowerCase();
+        console.log('[Pool] Treasury private key length:', userConfig.treasury.privateKey.length);
+        console.log('[Pool] Treasury private key valid format:', /^[0-9a-f]{64}$/.test(userConfig.treasury.privateKey));
+      }
+      fs.writeFileSync(poolConfigPath, JSON.stringify(userConfig, null, 2), 'utf-8');
+      console.log('[Pool] Copied user config to pool directory at:', poolConfigPath);
+    } else {
+      console.warn('[Pool] No user config found, pool will use default config.json');
+    }
+  } catch (err) {
+    console.error('[Pool] Failed to write config:', err.message);
+    return { started: false, error: `Failed to write pool config: ${err.message}` };
+  }
+  
   const entry = path.join(cwd, 'index.ts');
   const args = ['run', entry];
   try {
@@ -364,6 +488,40 @@ ipcMain.handle('pool:config:update', async (event, partial) => {
     return { success: true, config: next };
   } catch (e) {
     return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('pool:generate-keypair', async () => {
+  try {
+    // Generate a new random keypair
+    const keypair = kaspa.Keypair.random();
+    const address = keypair.toAddress(KASPA_NETWORK).toString();
+    // keypair.privateKey already returns a hex string (see kaspa.js line 4094)
+    const privateKeyHex = keypair.privateKey;
+    
+    // Validate the generated key to ensure it's correct format
+    if (!privateKeyHex || typeof privateKeyHex !== 'string') {
+      throw new Error('Failed to get private key hex string');
+    }
+    
+    // Verify it's a valid private key by creating a PrivateKey object
+    const testKey = new kaspa.PrivateKey(privateKeyHex);
+    const testKeypair = kaspa.Keypair.fromPrivateKey(testKey);
+    const testAddress = testKeypair.toAddress(KASPA_NETWORK).toString();
+    
+    // Verify address matches
+    if (testAddress !== address) {
+      throw new Error('Generated keypair validation failed: address mismatch');
+    }
+    
+    return {
+      success: true,
+      address: address,
+      privateKey: privateKeyHex
+    };
+  } catch (error) {
+    console.error('[IPC] pool:generate-keypair error:', error);
+    return { success: false, error: error.message };
   }
 });
 

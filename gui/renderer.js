@@ -38,6 +38,13 @@ function showMessage(text, type = 'info') {
   }, 5000);
 }
 
+// HTML escape helper
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 // Session state management
 let allSessionsData = [];
 let currentFilter = 'all';
@@ -600,16 +607,130 @@ document.getElementById('create-session-form').addEventListener('submit', async 
 });
 
 // Wallet Tab
+// Generate QR code for wallet address
+async function generateWalletQRCode(address) {
+  const qrCanvas = document.getElementById('wallet-address-qrcode');
+  if (!qrCanvas || !address) return;
+  
+  // Determine QR code size based on screen width
+  const isMobile = window.innerWidth <= 768;
+  const qrSize = isMobile ? 150 : 200;
+  
+  // Set canvas size
+  qrCanvas.width = qrSize;
+  qrCanvas.height = qrSize;
+  
+  try {
+    // Generate QR code via main process (using local qrcode package)
+    const result = await electronAPI.qrcode.toDataURL(address, {
+      width: qrSize,
+      margin: 2,
+      color: {
+        dark: '#000000',
+        light: '#FFFFFF'
+      },
+      errorCorrectionLevel: 'M'
+    });
+    
+    if (result.success && result.dataURL) {
+      // Draw the QR code data URL onto the canvas
+      const img = new Image();
+      img.onload = function() {
+        const ctx = qrCanvas.getContext('2d');
+        ctx.clearRect(0, 0, qrCanvas.width, qrCanvas.height);
+        ctx.drawImage(img, 0, 0, qrSize, qrSize);
+      };
+      img.onerror = function() {
+        console.error('Error loading QR code image');
+        qrCanvas.style.display = 'none';
+      };
+      img.src = result.dataURL;
+    } else {
+      console.error('Failed to generate QR code:', result.error);
+      qrCanvas.style.display = 'none';
+    }
+  } catch (error) {
+    console.error('Error generating QR code:', error);
+    qrCanvas.style.display = 'none';
+  }
+}
+
 async function checkWalletStatus() {
   const result = await electronAPI.wallet.info();
   if (result.success && result.wallet) {
     document.getElementById('wallet-not-imported').classList.add('hidden');
     document.getElementById('wallet-imported').classList.remove('hidden');
-    document.getElementById('wallet-address').textContent = result.wallet.address;
+    const address = result.wallet.address;
+    document.getElementById('wallet-address').textContent = address;
+    
+    // Generate QR code for the address
+    generateWalletQRCode(address);
+    
+    // Show KPUB if available
+    const kpubCard = document.getElementById('wallet-kpub-card');
+    const kpubDisplay = document.getElementById('wallet-kpub');
+    const kpubNote = document.getElementById('wallet-kpub-note');
+    const copyKpubBtn = document.getElementById('copy-wallet-kpub');
+    
+    if (result.wallet.hasKPUB && result.wallet.kpub) {
+      // Show KPUB card
+      kpubCard.style.display = 'block';
+      kpubDisplay.textContent = result.wallet.kpub;
+      copyKpubBtn.style.display = 'inline-block';
+      
+      if (result.wallet.derivationPath) {
+        kpubNote.innerHTML = `<div style="margin-bottom:0.25rem;">Derivation path: <code style="font-size:0.85em;">${result.wallet.derivationPath}</code></div><div style="color:var(--warning-color, #ffc107); font-weight:500;">⚠️ Contains chain code - use with caution. While this KPUB cannot spend funds directly, it should not be shared publicly as it reveals key derivation structure.</div>`;
+      } else {
+        kpubNote.innerHTML = `<div style="color:var(--warning-color, #ffc107); font-weight:500;">⚠️ Contains chain code - use with caution. While this KPUB cannot spend funds directly, it should not be shared publicly as it reveals key derivation structure.</div>`;
+      }
+      kpubNote.style.display = 'block';
+    } else {
+      // Show note that KPUB is not available
+      kpubCard.style.display = 'block';
+      kpubDisplay.textContent = 'Not available';
+      kpubDisplay.style.color = 'var(--text-secondary)';
+      copyKpubBtn.style.display = 'none';
+      kpubNote.textContent = result.wallet.kpubNote || 'KPUB only available for wallets imported via mnemonic';
+      kpubNote.style.display = 'block';
+    }
+    
     loadWalletBalance();
+    loadTransactionHistory(true);
+    loadAddressBook(); // Load address book
+    
+    // Start auto-refresh for balance (every 10 seconds for faster updates)
+    if (window.balanceRefreshInterval) {
+      clearInterval(window.balanceRefreshInterval);
+    }
+    window.balanceRefreshInterval = setInterval(() => {
+      loadWalletBalance();
+      loadTransactionHistory(true); // Refresh transaction history too
+    }, 10000); // 10 seconds for faster status updates
+    
+    // Also check pending transactions more frequently (every 5 seconds)
+    if (window.pendingTxCheckInterval) {
+      clearInterval(window.pendingTxCheckInterval);
+    }
+    window.pendingTxCheckInterval = setInterval(() => {
+      // Only refresh if we have pending transactions (check first without full reload)
+      const hasPending = Array.from(document.querySelectorAll('.transaction-status.pending')).length > 0;
+      if (hasPending) {
+        loadTransactionHistory(true);
+      }
+    }, 5000); // Check every 5 seconds for pending transaction updates
   } else {
     document.getElementById('wallet-not-imported').classList.remove('hidden');
     document.getElementById('wallet-imported').classList.add('hidden');
+    
+    // Stop auto-refresh
+    if (window.balanceRefreshInterval) {
+      clearInterval(window.balanceRefreshInterval);
+      window.balanceRefreshInterval = null;
+    }
+    if (window.pendingTxCheckInterval) {
+      clearInterval(window.pendingTxCheckInterval);
+      window.pendingTxCheckInterval = null;
+    }
   }
 }
 
@@ -617,15 +738,203 @@ async function loadWalletBalance() {
   try {
     const result = await electronAPI.wallet.balance();
     if (result.success) {
-      document.getElementById('balance-amount').textContent = `${result.balance.total.toFixed(8)} KAS`;
+      const balance = result.balance;
+      document.getElementById('balance-amount').textContent = `${balance.total.toFixed(8)} KAS`;
+      
+      // Show breakdown
+      const breakdown = document.getElementById('balance-breakdown');
+      document.getElementById('balance-confirmed').textContent = `${balance.confirmed.toFixed(8)} KAS`;
+      document.getElementById('balance-pending').textContent = `${balance.unconfirmed.toFixed(8)} KAS`;
+      document.getElementById('balance-mature').textContent = `${(balance.mature || 0).toFixed(8)} KAS`;
+      
+      // Show last updated time
+      if (balance.lastUpdated) {
+        const lastUpdated = new Date(balance.lastUpdated);
+        const timeAgo = Math.floor((Date.now() - balance.lastUpdated) / 1000);
+        let timeStr = '';
+        if (timeAgo < 60) {
+          timeStr = `${timeAgo}s ago`;
+        } else if (timeAgo < 3600) {
+          timeStr = `${Math.floor(timeAgo / 60)}m ago`;
+        } else {
+          timeStr = `${Math.floor(timeAgo / 3600)}h ago`;
+        }
+        document.getElementById('balance-last-updated').textContent = `Updated ${timeStr}`;
+      }
+      
+      breakdown.style.display = 'block';
     } else {
       document.getElementById('balance-amount').textContent = 'Error';
+      document.getElementById('balance-breakdown').style.display = 'none';
     }
   } catch (error) {
     document.getElementById('balance-amount').textContent = 'Error';
+    document.getElementById('balance-breakdown').style.display = 'none';
   }
 }
 
+// Load transaction history
+let transactionHistoryOffset = 0;
+let transactionHistoryLimit = 20;
+let allLoadedTransactions = [];
+
+async function loadTransactionHistory(reset = false) {
+  try {
+    const listEl = document.getElementById('transaction-history-list');
+    if (reset) {
+      transactionHistoryOffset = 0;
+      allLoadedTransactions = [];
+      listEl.innerHTML = '<div style="text-align:center; padding:2rem; color:var(--text-secondary);">Loading transactions...</div>';
+    }
+    
+    const result = await electronAPI.wallet.transactionHistory(transactionHistoryLimit, transactionHistoryOffset);
+    if (result.success && result.transactions) {
+      if (reset) {
+        allLoadedTransactions = result.transactions;
+      } else {
+        allLoadedTransactions = allLoadedTransactions.concat(result.transactions);
+      }
+      
+      if (allLoadedTransactions.length === 0) {
+        listEl.innerHTML = '<div style="text-align:center; padding:2rem; color:var(--text-secondary);">No transactions found</div>';
+        document.getElementById('transaction-history-pagination').style.display = 'none';
+        return;
+      }
+      
+      // Render transactions
+      listEl.innerHTML = allLoadedTransactions.map(tx => {
+        const date = new Date(tx.timestamp);
+        const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+        const amountStr = Math.abs(tx.amount).toFixed(8);
+        const feeStr = tx.fee ? tx.fee.toFixed(8) : '0';
+        const statusClass = tx.status === 'confirmed' ? 'confirmed' : 'pending';
+        const txIdShort = tx.txId ? tx.txId.substring(0, 16) + '...' : 'N/A';
+        
+        return `
+          <div class="transaction-item ${tx.type}" onclick="copyToClipboard('${tx.txId || ''}')">
+            <div class="transaction-item-header">
+              <span class="transaction-type ${tx.type}">${tx.type === 'received' ? 'Received' : 'Sent'}</span>
+              <span class="transaction-amount ${tx.type}">${tx.type === 'received' ? '+' : '-'}${amountStr} KAS</span>
+            </div>
+            <div class="transaction-details">
+              <div><strong>Date:</strong> ${dateStr}</div>
+              <div><strong>Fee:</strong> ${feeStr} KAS</div>
+              ${tx.confirmations !== undefined ? `<div><strong>Confirmations:</strong> ${tx.confirmations}</div>` : ''}
+              <div><strong>Status:</strong> <span class="transaction-status ${statusClass}">${tx.status}</span></div>
+            </div>
+            <div class="transaction-txid" title="Click to copy TX ID">TX: ${txIdShort}</div>
+          </div>
+        `;
+      }).join('');
+      
+      // Update pagination
+      const paginationEl = document.getElementById('transaction-history-pagination');
+      const infoEl = document.getElementById('transaction-history-info');
+      if (result.total > allLoadedTransactions.length) {
+        paginationEl.style.display = 'block';
+        infoEl.textContent = `Showing ${allLoadedTransactions.length} of ${result.total} transactions`;
+        transactionHistoryOffset += transactionHistoryLimit;
+      } else {
+        paginationEl.style.display = 'none';
+        if (result.total > 0) {
+          infoEl.textContent = `Showing all ${result.total} transactions`;
+        }
+      }
+    } else {
+      listEl.innerHTML = '<div style="text-align:center; padding:2rem; color:var(--text-secondary);">Error loading transactions</div>';
+    }
+  } catch (error) {
+    document.getElementById('transaction-history-list').innerHTML = '<div style="text-align:center; padding:2rem; color:var(--text-secondary);">Error: ' + error.message + '</div>';
+  }
+}
+
+// Helper function to copy to clipboard
+window.copyToClipboard = async (text) => {
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    showMessage('Transaction ID copied to clipboard', 'success');
+  } catch (e) {
+    showMessage('Failed to copy', 'error');
+  }
+};
+
+// Fee estimation on amount/address change
+let feeEstimateTimeout = null;
+async function estimateFeeForSend() {
+  const address = document.getElementById('send-address').value.trim();
+  const amount = parseFloat(document.getElementById('send-amount').value);
+  const feeEstimationEl = document.getElementById('fee-estimation');
+  const feeWarningEl = document.getElementById('fee-warning');
+  
+  if (!address || !amount || amount <= 0) {
+    feeEstimationEl.style.display = 'none';
+    return;
+  }
+  
+  // Basic address validation
+  if (!address.startsWith('kaspa:')) {
+    feeEstimationEl.style.display = 'none';
+    return;
+  }
+  
+  // Debounce fee estimation
+  clearTimeout(feeEstimateTimeout);
+  feeEstimateTimeout = setTimeout(async () => {
+    try {
+      const result = await electronAPI.wallet.estimateFee(address, amount);
+      if (result.success && result.estimate) {
+        const est = result.estimate;
+        document.getElementById('estimated-fee-amount').textContent = `${est.estimatedFee.toFixed(8)} KAS`;
+        document.getElementById('total-cost-amount').textContent = `${est.totalCost.toFixed(8)} KAS`;
+        
+        feeEstimationEl.style.display = 'block';
+        
+        // Show warning if can't send
+        if (!est.canSend) {
+          feeWarningEl.style.display = 'block';
+          feeWarningEl.textContent = `⚠️ Insufficient balance. Available: ${est.availableBalance.toFixed(8)} KAS, Required: ${est.totalCost.toFixed(8)} KAS`;
+        } else {
+          feeWarningEl.style.display = 'none';
+        }
+      } else {
+        feeEstimationEl.style.display = 'none';
+      }
+    } catch (error) {
+      feeEstimationEl.style.display = 'none';
+    }
+  }, 500);
+}
+
+// Wallet import method tabs
+document.querySelectorAll('.wallet-import-tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const method = btn.dataset.method;
+    
+    // Update tab buttons
+    document.querySelectorAll('.wallet-import-tab-btn').forEach(b => {
+      b.classList.remove('active');
+      b.style.borderBottomColor = 'transparent';
+      b.style.color = 'var(--text-secondary)';
+    });
+    btn.classList.add('active');
+    btn.style.borderBottomColor = 'var(--primary)';
+    btn.style.color = 'var(--text-primary)';
+    
+    // Update method panels
+    document.querySelectorAll('.wallet-import-method').forEach(panel => {
+      panel.style.display = 'none';
+      panel.classList.remove('active');
+    });
+    const targetPanel = document.getElementById(`import-method-${method}`);
+    if (targetPanel) {
+      targetPanel.style.display = 'block';
+      targetPanel.classList.add('active');
+    }
+  });
+});
+
+// Private Key Import
 document.getElementById('import-wallet-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const privateKey = document.getElementById('private-key-input').value.trim();
@@ -646,6 +955,175 @@ document.getElementById('import-wallet-form').addEventListener('submit', async (
     }
   } catch (error) {
     showMessage(error.message, 'error');
+  }
+});
+
+// Mnemonic Import
+document.getElementById('import-mnemonic-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const mnemonic = document.getElementById('mnemonic-input').value.trim();
+  const passphrase = document.getElementById('mnemonic-passphrase-input').value.trim();
+  
+  if (!mnemonic) {
+    showMessage('Please enter a mnemonic phrase', 'error');
+    return;
+  }
+  
+  try {
+    const result = await electronAPI.wallet.importMnemonic(mnemonic, passphrase);
+    if (result.success) {
+      showMessage('Wallet imported from mnemonic successfully!', 'success');
+      document.getElementById('mnemonic-input').value = '';
+      document.getElementById('mnemonic-passphrase-input').value = '';
+      checkWalletStatus();
+    } else {
+      showMessage(result.error || 'Failed to import wallet from mnemonic', 'error');
+    }
+  } catch (error) {
+    showMessage(error.message || 'Failed to import wallet from mnemonic', 'error');
+  }
+});
+
+// Clear KPUB results function
+function clearKpubResults() {
+  const addressesResult = document.getElementById('kpub-addresses-result');
+  const addressesList = document.getElementById('kpub-addresses-list');
+  const clearBtn = document.getElementById('clear-kpub-results');
+  const clearBtnInline = document.getElementById('clear-kpub-results-inline');
+  
+  addressesList.innerHTML = '';
+  addressesResult.style.display = 'none';
+  if (clearBtn) clearBtn.style.display = 'none';
+}
+
+// Clear button handlers
+const clearKpubBtn = document.getElementById('clear-kpub-results');
+const clearKpubBtnInline = document.getElementById('clear-kpub-results-inline');
+
+if (clearKpubBtn) {
+  clearKpubBtn.addEventListener('click', () => {
+    clearKpubResults();
+  });
+}
+
+if (clearKpubBtnInline) {
+  clearKpubBtnInline.addEventListener('click', () => {
+    clearKpubResults();
+  });
+}
+
+// KPUB/XPUB Address Generation
+document.getElementById('import-kpub-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const kpub = document.getElementById('kpub-input').value.trim();
+  const startIndex = parseInt(document.getElementById('kpub-start-index').value) || 0;
+  const count = parseInt(document.getElementById('kpub-count').value) || 10;
+  
+  if (!kpub) {
+    showMessage('Please enter a KPUB/XPUB', 'error');
+    return;
+  }
+  
+  if (count < 1 || count > 100) {
+    showMessage('Count must be between 1 and 100', 'error');
+    return;
+  }
+  
+  try {
+    // Detect format first to provide better feedback
+    const formatResult = await electronAPI.wallet.detectKPUBFormat(kpub);
+    if (formatResult.success) {
+      const formatInfo = formatResult.formatInfo;
+      console.log(`[Wallet] Detected format: ${formatInfo.format} (${formatInfo.description})`);
+      
+      // Show format info to user
+      if (formatInfo.format !== 'unknown') {
+        showMessage(`Detected ${formatInfo.description}`, 'success');
+      }
+    }
+    
+    const result = await electronAPI.wallet.generateAddressesKpub(kpub, startIndex, count);
+    if (result.success && result.result) {
+      const addressesResult = document.getElementById('kpub-addresses-result');
+      const addressesList = document.getElementById('kpub-addresses-list');
+      const clearBtn = document.getElementById('clear-kpub-results');
+      
+      addressesList.innerHTML = '';
+      
+      // Show clear button next to Generate Addresses button
+      if (clearBtn) clearBtn.style.display = 'inline-block';
+      
+      result.result.addresses.forEach(addr => {
+        const addrDiv = document.createElement('div');
+        addrDiv.style.cssText = 'padding:0.5rem; margin-bottom:0.5rem; background:rgba(0,0,0,0.3); border-radius:6px; border:1px solid rgba(112,199,186,0.2);';
+        
+        // Show wallet type and format if available
+        const walletTypeLabel = addr.walletType ? ` (${addr.walletType})` : '';
+        const formatLabel = addr.format ? ` [${addr.format.toUpperCase()}]` : '';
+        
+        addrDiv.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div style="flex:1;">
+              <div style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:0.25rem;">
+                Index ${addr.index}${formatLabel}${walletTypeLabel}
+              </div>
+              <div style="font-size:0.75rem; color:var(--text-secondary); margin-bottom:0.25rem; font-family:ui-monospace,Menlo,Consolas,\'Courier New\',monospace;">
+                ${addr.path}
+              </div>
+              <div style="font-family:ui-monospace,Menlo,Consolas,\'Courier New\',monospace; font-size:0.9rem; word-break:break-all;">${addr.address}</div>
+            </div>
+            <button class="btn btn-secondary btn-sm copy-kpub-address" data-address="${addr.address}" style="padding:4px 12px; font-size:0.85rem; margin-left:0.5rem;">
+              Copy
+            </button>
+          </div>
+        `;
+        addressesList.appendChild(addrDiv);
+      });
+      
+      // Show format and wallet info if available
+      if (result.result.formatInfo || result.result.walletInfo) {
+        const infoDiv = document.createElement('div');
+        infoDiv.style.cssText = 'padding:0.5rem; margin-bottom:0.5rem; background:rgba(112,199,186,0.1); border-radius:6px; border:1px solid rgba(112,199,186,0.3); font-size:0.85rem;';
+        let infoText = '';
+        if (result.result.formatInfo) {
+          infoText += `Format: ${result.result.formatInfo.description}`;
+        }
+        if (result.result.walletInfo) {
+          infoText += infoText ? ` | Wallet: ${result.result.walletInfo.wallet}` : `Wallet: ${result.result.walletInfo.wallet}`;
+        }
+        infoDiv.textContent = infoText;
+        addressesList.insertBefore(infoDiv, addressesList.firstChild);
+      }
+      
+      // Add copy button handlers
+      addressesList.querySelectorAll('.copy-kpub-address').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const address = btn.dataset.address;
+          try {
+            await navigator.clipboard.writeText(address);
+            showMessage('Address copied to clipboard', 'success');
+          } catch (err) {
+            // Fallback
+            const textArea = document.createElement('textarea');
+            textArea.value = address;
+            textArea.style.position = 'fixed';
+            textArea.style.opacity = '0';
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            showMessage('Address copied to clipboard', 'success');
+          }
+        });
+      });
+      
+      addressesResult.style.display = 'block';
+      showMessage(`Generated ${result.result.count} address(es) from KPUB/XPUB`, 'success');
+    } else {
+      showMessage(result.error || 'Failed to generate addresses from KPUB/XPUB', 'error');
+    }
+  } catch (error) {
+    showMessage(error.message || 'Failed to generate addresses from KPUB/XPUB', 'error');
   }
 });
 
@@ -690,6 +1168,34 @@ if (copyBtn) {
   });
 }
 
+// Copy KPUB button
+const copyKpubBtn = document.getElementById('copy-wallet-kpub');
+
+if (copyKpubBtn) {
+  copyKpubBtn.addEventListener('click', async () => {
+    const kpub = document.getElementById('wallet-kpub').textContent.trim();
+    if (kpub && kpub !== 'Not available') {
+      try {
+        await navigator.clipboard.writeText(kpub);
+        showMessage('KPUB copied to clipboard', 'success');
+      } catch (e) {
+        // Fallback
+        const textArea = document.createElement('textarea');
+        textArea.value = kpub;
+        textArea.style.position = 'fixed';
+        textArea.style.opacity = '0';
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        showMessage('KPUB copied to clipboard', 'success');
+      }
+    } else {
+      showMessage('No KPUB available to copy', 'error');
+    }
+  });
+}
+
 async function openQr(address) {
   if (!qrModal) return;
   // Show modal immediately with loading state
@@ -717,6 +1223,10 @@ async function openQr(address) {
 }
 
 
+// Fee estimation listeners
+document.getElementById('send-address').addEventListener('input', estimateFeeForSend);
+document.getElementById('send-amount').addEventListener('input', estimateFeeForSend);
+
 document.getElementById('send-funds-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const address = document.getElementById('send-address').value.trim();
@@ -732,7 +1242,16 @@ document.getElementById('send-funds-form').addEventListener('submit', async (e) 
     if (result.success) {
       showMessage(`Transaction sent! TX: ${result.result.txId}`, 'success');
       document.getElementById('send-funds-form').reset();
-      setTimeout(loadWalletBalance, 2000); // Refresh balance after 2 seconds
+      document.getElementById('fee-estimation').style.display = 'none';
+      
+      // Immediately refresh to show the new transaction
+      loadWalletBalance();
+      loadTransactionHistory(true);
+      
+      // Also refresh again after 5 seconds to catch early confirmations
+      setTimeout(() => {
+        loadTransactionHistory(true);
+      }, 5000);
     } else {
       showMessage(result.error, 'error');
     }
@@ -741,17 +1260,248 @@ document.getElementById('send-funds-form').addEventListener('submit', async (e) 
   }
 });
 
+// Transaction history refresh button
+document.getElementById('refresh-transactions').addEventListener('click', () => {
+  loadTransactionHistory(true);
+});
+
+// Load more transactions button
+document.getElementById('load-more-transactions').addEventListener('click', () => {
+  loadTransactionHistory(false);
+});
+
+// ==================== Address Book Functions ====================
+
+// Load and display address book
+async function loadAddressBook() {
+  try {
+    const result = await electronAPI.wallet.addressBook.list();
+    if (result.success) {
+      renderAddressBook(result.addresses);
+      updateAddressBookDropdown(result.addresses);
+    } else {
+      showMessage(`Failed to load address book: ${result.error}`, 'error');
+    }
+  } catch (error) {
+    showMessage(`Error loading address book: ${error.message}`, 'error');
+  }
+}
+
+// Render address book list
+function renderAddressBook(addresses) {
+  const listEl = document.getElementById('addressbook-list');
+  
+  if (!addresses || addresses.length === 0) {
+    listEl.innerHTML = '<div style="text-align:center; padding:2rem; color:var(--text-secondary);">No addresses saved. Add your first address above.</div>';
+    return;
+  }
+  
+  // Group by category
+  const byCategory = {};
+  addresses.forEach(addr => {
+    const cat = addr.category || 'General';
+    if (!byCategory[cat]) {
+      byCategory[cat] = [];
+    }
+    byCategory[cat].push(addr);
+  });
+  
+  // Sort categories
+  const categories = Object.keys(byCategory).sort();
+  
+  let html = '';
+  categories.forEach(category => {
+    html += `<div style="margin-bottom:1.5rem;">`;
+    html += `<h4 style="font-size:0.9rem; font-weight:600; color:var(--kaspa-primary); margin-bottom:0.75rem; padding-bottom:0.5rem; border-bottom:1px solid rgba(112,199,186,0.2);">${category}</h4>`;
+    
+    byCategory[category].forEach(entry => {
+      html += `
+        <div class="addressbook-entry" style="padding:0.75rem; margin-bottom:0.5rem; background:rgba(255,255,255,0.05); border-radius:8px; border:1px solid rgba(112,199,186,0.1); display:flex; justify-content:space-between; align-items:center;">
+          <div style="flex:1; min-width:0;">
+            <div style="font-weight:600; color:var(--text-primary); margin-bottom:0.25rem; font-size:0.9rem;">${escapeHtml(entry.label)}</div>
+            <div style="font-family:ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size:0.8rem; color:var(--text-secondary); word-break:break-all;">${escapeHtml(entry.address)}</div>
+          </div>
+          <div style="display:flex; gap:0.5rem; margin-left:1rem; flex-shrink:0;">
+            <button class="btn btn-secondary btn-sm addressbook-use-btn" data-address="${escapeHtml(entry.address)}" title="Use in Send Funds">Use</button>
+            <button class="btn btn-secondary btn-sm addressbook-edit-btn" data-id="${entry.id}" title="Edit">Edit</button>
+            <button class="btn btn-danger btn-sm addressbook-delete-btn" data-id="${entry.id}" title="Delete">Delete</button>
+          </div>
+        </div>
+      `;
+    });
+    
+    html += `</div>`;
+  });
+  
+  listEl.innerHTML = html;
+  
+  // Attach event listeners
+  document.querySelectorAll('.addressbook-use-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const address = e.target.getAttribute('data-address');
+      document.getElementById('send-address').value = address;
+      document.getElementById('send-address').dispatchEvent(new Event('input')); // Trigger fee estimation
+      // Scroll to send funds section
+      document.getElementById('wallet-send-content').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      showMessage(`Address copied to send form`, 'success');
+    });
+  });
+  
+  document.querySelectorAll('.addressbook-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const id = e.target.getAttribute('data-id');
+      if (confirm('Are you sure you want to delete this address?')) {
+        try {
+          const result = await electronAPI.wallet.addressBook.remove(id);
+          if (result.success) {
+            showMessage('Address removed from address book', 'success');
+            loadAddressBook();
+          } else {
+            showMessage(result.error, 'error');
+          }
+        } catch (error) {
+          showMessage(`Failed to remove address: ${error.message}`, 'error');
+        }
+      }
+    });
+  });
+  
+  document.querySelectorAll('.addressbook-edit-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const id = e.target.getAttribute('data-id');
+      const entry = addresses.find(a => a.id === id);
+      if (entry) {
+        // Populate form for editing
+        document.getElementById('addressbook-address').value = entry.address;
+        document.getElementById('addressbook-label').value = entry.label;
+        document.getElementById('addressbook-category').value = entry.category || 'General';
+        
+        // Change submit button to "Update"
+        const form = document.getElementById('addressbook-add-form');
+        const submitBtn = form.querySelector('button[type="submit"]');
+        submitBtn.textContent = 'Update Address';
+        submitBtn.dataset.editId = id;
+        
+        // Scroll to form
+        form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    });
+  });
+}
+
+// Update address book dropdown in Send Funds form
+function updateAddressBookDropdown(addresses) {
+  const selectEl = document.getElementById('send-address-select');
+  if (!selectEl) return;
+  
+  // Clear existing options (except the first one)
+  selectEl.innerHTML = '<option value="">From Address Book</option>';
+  
+  if (!addresses || addresses.length === 0) {
+    selectEl.innerHTML = '<option value="">No saved addresses</option>';
+    return;
+  }
+  
+  // Group by category
+  const byCategory = {};
+  addresses.forEach(addr => {
+    const cat = addr.category || 'General';
+    if (!byCategory[cat]) {
+      byCategory[cat] = [];
+    }
+    byCategory[cat].push(addr);
+  });
+  
+  // Add options grouped by category
+  Object.keys(byCategory).sort().forEach(category => {
+    const optgroup = document.createElement('optgroup');
+    optgroup.label = category;
+    
+    byCategory[category].forEach(entry => {
+      const option = document.createElement('option');
+      option.value = entry.address;
+      option.textContent = `${entry.label} - ${entry.address.substring(0, 20)}...`;
+      optgroup.appendChild(option);
+    });
+    
+    selectEl.appendChild(optgroup);
+  });
+}
+
+// Address book form submit
+document.getElementById('addressbook-add-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  
+  const address = document.getElementById('addressbook-address').value.trim();
+  const label = document.getElementById('addressbook-label').value.trim();
+  const category = document.getElementById('addressbook-category').value;
+  const submitBtn = e.target.querySelector('button[type="submit"]');
+  const editId = submitBtn.dataset.editId;
+  
+  try {
+    if (editId) {
+      // Update existing address
+      const result = await electronAPI.wallet.addressBook.update(editId, {
+        address,
+        label,
+        category
+      });
+      
+      if (result.success) {
+        showMessage('Address updated successfully', 'success');
+        e.target.reset();
+        submitBtn.textContent = 'Add Address';
+        delete submitBtn.dataset.editId;
+        loadAddressBook();
+      } else {
+        showMessage(result.error, 'error');
+      }
+    } else {
+      // Add new address
+      const result = await electronAPI.wallet.addressBook.add(address, label, category);
+      
+      if (result.success) {
+        showMessage('Address added to address book', 'success');
+        e.target.reset();
+        loadAddressBook();
+      } else {
+        showMessage(result.error, 'error');
+      }
+    }
+  } catch (error) {
+    showMessage(`Failed to save address: ${error.message}`, 'error');
+  }
+});
+
+// Address book dropdown selection
+document.getElementById('send-address-select').addEventListener('change', (e) => {
+  const selectedAddress = e.target.value;
+  if (selectedAddress) {
+    document.getElementById('send-address').value = selectedAddress;
+    document.getElementById('send-address').dispatchEvent(new Event('input')); // Trigger fee estimation
+    e.target.value = ''; // Reset dropdown
+  }
+});
+
+// Refresh address book button
+document.getElementById('refresh-addressbook').addEventListener('click', loadAddressBook);
+
+
 // Node Status Management
 let nodeStatusData = null;
 
-function updateNodeStatusIndicator(status) {
+async function updateNodeStatusIndicator(status) {
   const indicator = document.getElementById('node-status-indicator');
   const dot = indicator.querySelector('.status-dot');
   const text = document.getElementById('node-status-text');
+  const portBadgesContainer = document.getElementById('port-badges');
   
   if (!status) {
     dot.className = 'status-dot';
     text.textContent = 'Checking...';
+    if (portBadgesContainer) {
+      portBadgesContainer.innerHTML = '';
+    }
     return;
   }
   
@@ -772,7 +1522,75 @@ function updateNodeStatusIndicator(status) {
     text.textContent = status.message || 'Unknown';
   }
   
+  // Update port badges
+  try {
+    const portInfo = await electronAPI.node.getPortInfo();
+    if (portInfo && portInfo.success) {
+      updatePortBadges(portInfo, status.status === 'connected');
+    }
+  } catch (err) {
+    console.error('Failed to get port info:', err);
+    if (portBadgesContainer) {
+      portBadgesContainer.innerHTML = '';
+    }
+  }
+  
   nodeStatusData = status;
+}
+
+function updatePortBadges(portInfo, nodeConnected) {
+  const portBadgesContainer = document.getElementById('port-badges');
+  if (!portBadgesContainer) return;
+  
+  portBadgesContainer.innerHTML = '';
+  
+  if (!portInfo) return;
+  
+  // GRPC/HTTP RPC Port (Node) - Standard port 16110
+  if (portInfo.grpcPort) {
+    const isListening = portInfo.grpcListening !== undefined ? portInfo.grpcListening : nodeConnected;
+    const grpcBadge = createPortBadge('GRPC', portInfo.grpcPort, isListening, `HTTP/GRPC RPC server (${isListening ? 'Listening' : 'Not listening'})`);
+    portBadgesContainer.appendChild(grpcBadge);
+  }
+  
+  // P2P Port (Node) - Standard port 16111
+  if (portInfo.p2pPort) {
+    const isListening = portInfo.p2pListening !== undefined ? portInfo.p2pListening : nodeConnected;
+    const p2pBadge = createPortBadge('P2P', portInfo.p2pPort, isListening, `P2P network server (${isListening ? 'Listening' : 'Not listening'})`);
+    portBadgesContainer.appendChild(p2pBadge);
+  }
+  
+  // WRPC/WebSocket Port (Node) - Standard port 17110 (or from config)
+  if (portInfo.wrpcPort) {
+    const isListening = portInfo.wrpcListening !== undefined ? portInfo.wrpcListening : nodeConnected;
+    const wrpcBadge = createPortBadge('WRPC', portInfo.wrpcPort, isListening, `WebSocket RPC (Borsh) (${isListening ? 'Connected' : 'Disconnected'})`);
+    portBadgesContainer.appendChild(wrpcBadge);
+  }
+  
+  // Mining Pool Port - Only show if pool is running
+  if (portInfo.poolPort && portInfo.poolRunning) {
+    const poolBadge = createPortBadge('Pool', portInfo.poolPort, true, 'Stratum mining pool (Active)');
+    portBadgesContainer.appendChild(poolBadge);
+  }
+  
+  // API Port - Only show if pool is running
+  if (portInfo.apiPort && portInfo.poolRunning) {
+    const apiBadge = createPortBadge('API', portInfo.apiPort, true, 'Mining pool API (Active)');
+    portBadgesContainer.appendChild(apiBadge);
+  }
+}
+
+function createPortBadge(label, port, active, tooltip) {
+  const badge = document.createElement('div');
+  badge.className = `port-badge ${active ? 'port-active' : 'port-inactive'}`;
+  badge.title = tooltip || `${label} Port ${port}`;
+  
+  badge.innerHTML = `
+    <span class="port-label">${label}</span>
+    <span class="port-number">${port}</span>
+  `;
+  
+  return badge;
 }
 
 // Listen for node status updates (handled below after modal setup)
@@ -1123,6 +1941,11 @@ async function refreshPoolStatus() {
         // Auto-scroll to bottom to show latest logs/errors
         outputEl.scrollTop = outputEl.scrollHeight;
       }
+      
+      // Update port badges when pool status changes
+      if (nodeStatusData) {
+        updateNodeStatusIndicator(nodeStatusData);
+      }
       // Fetch live API stats with quick retry to handle startup races
       try {
         let j = null;
@@ -1274,6 +2097,11 @@ if (poolStartBtn) {
     
     // Force immediate refresh of workers dashboard when pool starts
     setTimeout(refreshWorkersDashboard, 500);
+    
+    // Update port badges after pool starts
+    if (nodeStatusData) {
+      setTimeout(() => updateNodeStatusIndicator(nodeStatusData), 600);
+    }
   });
 }
 
@@ -1286,6 +2114,11 @@ if (poolStopBtn) {
       showMessage(res.error || res.message || 'Failed to stop pool', 'error');
     }
     setTimeout(refreshPoolStatus, 500);
+    
+    // Update port badges after pool stops
+    if (nodeStatusData) {
+      setTimeout(() => updateNodeStatusIndicator(nodeStatusData), 600);
+    }
   });
 }
 
@@ -1502,6 +2335,54 @@ if (poolSaveKeyBtn) {
       showMessage('Treasury key saved to config', 'success');
     } else {
       showMessage(res.error || 'Failed to save key', 'error');
+    }
+  });
+}
+
+// Auto-detect IPv4 address and fill in LAN connection string
+const poolDetectIpBtn = document.getElementById('pool-detect-ip');
+if (poolDetectIpBtn) {
+  poolDetectIpBtn.addEventListener('click', async () => {
+    try {
+      poolDetectIpBtn.disabled = true;
+      poolDetectIpBtn.textContent = 'Detecting...';
+      
+      const result = await electronAPI.system.getLocalIp();
+      
+      if (result.success && result.ip) {
+        // Get the current port
+        const port = Number(document.getElementById('pool-port')?.value || 7777);
+        const lanEl = document.getElementById('pool-connect-lan');
+        
+        if (lanEl) {
+          lanEl.textContent = `stratum+tcp://${result.ip}:${port}`;
+          showMessage(`IPv4 address detected: ${result.ip}`, 'success');
+          
+          // Also copy to clipboard
+          try {
+            await navigator.clipboard.writeText(`stratum+tcp://${result.ip}:${port}`);
+            setTimeout(() => showMessage('Connection string copied to clipboard', 'success'), 500);
+          } catch (err) {
+            // Fallback copy method
+            const textArea = document.createElement('textarea');
+            textArea.value = `stratum+tcp://${result.ip}:${port}`;
+            textArea.style.position = 'fixed';
+            textArea.style.opacity = '0';
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            setTimeout(() => showMessage('Connection string copied to clipboard', 'success'), 500);
+          }
+        }
+      } else {
+        showMessage(result.error || 'Failed to detect IPv4 address', 'error');
+      }
+    } catch (error) {
+      showMessage(error.message || 'Failed to detect IP address', 'error');
+    } finally {
+      poolDetectIpBtn.disabled = false;
+      poolDetectIpBtn.textContent = 'Auto-Detect IP';
     }
   });
 }
@@ -1750,5 +2631,88 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Restore collapsed states on initial page load
   restoreCollapsedStates();
+  
+  // Load node mode on startup
+  loadNodeMode();
+});
+
+// Load node mode and update UI
+async function loadNodeMode() {
+  try {
+    const result = await electronAPI.node.getMode();
+    if (result.success) {
+      updateNodeModeUI(result.mode);
+    }
+  } catch (error) {
+    console.error('Failed to load node mode:', error);
+  }
+}
+
+// Update node mode UI
+function updateNodeModeUI(mode) {
+  const toggleBtn = document.getElementById('node-mode-toggle');
+  const modeText = document.getElementById('node-mode-text');
+  
+  if (!toggleBtn || !modeText) return;
+  
+  toggleBtn.classList.remove('public', 'private');
+  toggleBtn.classList.add(mode);
+  
+  modeText.textContent = mode === 'public' ? 'Public' : 'Private';
+  toggleBtn.title = mode === 'public' 
+    ? 'Node Mode: Public (UPnP Enabled) - Click to switch to Private' 
+    : 'Node Mode: Private (UPnP Disabled) - Click to switch to Public';
+}
+
+// Toggle node mode
+async function toggleNodeMode() {
+  const toggleBtn = document.getElementById('node-mode-toggle');
+  const modeText = document.getElementById('node-mode-text');
+  
+  if (!toggleBtn || !modeText) return;
+  
+  const currentMode = toggleBtn.classList.contains('public') ? 'public' : 'private';
+  const newMode = currentMode === 'public' ? 'private' : 'public';
+  
+  // Disable button during operation
+  toggleBtn.disabled = true;
+  modeText.textContent = 'Switching...';
+  
+  try {
+    const result = await electronAPI.node.setMode(newMode);
+    
+    if (result.success) {
+      updateNodeModeUI(newMode);
+      
+      if (result.restarted) {
+        showMessage(`Node mode changed to ${newMode}. Node is restarting...`, 'info');
+        // Update node status after restart
+        setTimeout(() => {
+          checkNodeStatus();
+        }, 5000);
+      } else {
+        showMessage(`Node mode set to ${newMode}. Restart node manually for changes to take effect.`, 'info');
+      }
+    } else {
+      showMessage(`Failed to change node mode: ${result.error}`, 'error');
+      // Revert UI
+      updateNodeModeUI(currentMode);
+    }
+  } catch (error) {
+    console.error('Failed to toggle node mode:', error);
+    showMessage(`Failed to toggle node mode: ${error.message}`, 'error');
+    // Revert UI
+    updateNodeModeUI(currentMode);
+  } finally {
+    toggleBtn.disabled = false;
+  }
+}
+
+// Node mode toggle button event listener
+document.addEventListener('DOMContentLoaded', () => {
+  const nodeModeToggle = document.getElementById('node-mode-toggle');
+  if (nodeModeToggle) {
+    nodeModeToggle.addEventListener('click', toggleNodeMode);
+  }
 });
 

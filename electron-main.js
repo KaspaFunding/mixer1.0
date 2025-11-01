@@ -4,13 +4,16 @@ const { app, BrowserWindow, ipcMain, session } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { ensureNodeRunning } = require('./lib/node-starter');
+const os = require('os');
+const QRCode = require('qrcode');
+const { ensureNodeRunning, restartNode, generateBatContent } = require('./lib/node-starter');
+const { getNodeMode, setNodeMode } = require('./lib/settings');
 
 // Import backend modules
 const { createSession, getSession, getAllSessions } = require('./lib/session-manager');
 const { deleteSession } = require('./lib/database');
 const { checkNodeStatus } = require('./lib/rpc-client');
-const { importPrivateKey, getWalletInfo, getWalletBalance, sendFromWallet, removeWallet } = require('./lib/wallet');
+const { importPrivateKey, importMnemonic, generateAddressesFromKPUB, detectKPUBFormat, detectWalletType, getWalletInfo, getWalletBalance, getWalletTransactionHistory, estimateTransactionFee, sendFromWallet, removeWallet, getAddressBook, addAddressToBook, updateAddressInBook, removeAddressFromBook } = require('./lib/wallet');
 const { kaspa, KASPA_NETWORK } = require('./lib/config');
 const { startMonitoring, startIntermediateMonitoring } = require('./lib/monitor');
 const { processFinalPayout } = require('./lib/payout');
@@ -242,6 +245,7 @@ function createWindow() {
         error: err.message
       });
     });
+    
   });
 
   mainWindow.on('closed', () => {
@@ -626,6 +630,42 @@ ipcMain.handle('wallet:import', async (event, privateKeyHex) => {
   }
 });
 
+ipcMain.handle('wallet:import-mnemonic', async (event, { mnemonic, passphrase }) => {
+  try {
+    const wallet = importMnemonic(mnemonic, passphrase || '');
+    return { success: true, wallet };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('wallet:generate-addresses-kpub', async (event, { kpub, startIndex, count }) => {
+  try {
+    const result = generateAddressesFromKPUB(kpub, startIndex || 0, count || 10);
+    return { success: true, result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('wallet:detect-kpub-format', async (event, extendedKey) => {
+  try {
+    const formatInfo = detectKPUBFormat(extendedKey);
+    return { success: true, formatInfo };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('wallet:detect-wallet-type', async (event, { extendedKey, mnemonic }) => {
+  try {
+    const walletInfo = detectWalletType(extendedKey, mnemonic || null);
+    return { success: true, walletInfo };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('wallet:info', () => {
   try {
     const wallet = getWalletInfo();
@@ -641,12 +681,32 @@ ipcMain.handle('wallet:balance', async () => {
     return {
       success: true,
       balance: {
-        confirmed: Number(balance.confirmed) / 1e8,
-        unconfirmed: Number(balance.unconfirmed) / 1e8,
-        total: Number(balance.total) / 1e8,
-        utxoCount: balance.utxoCount
+        total: balance.total,
+        confirmed: balance.confirmed,
+        unconfirmed: balance.unconfirmed,
+        mature: balance.mature || 0,
+        utxoCount: balance.utxoCount || 0,
+        lastUpdated: balance.lastUpdated || Date.now()
       }
     };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('wallet:transaction-history', async (event, { limit, offset }) => {
+  try {
+    const result = await getWalletTransactionHistory(limit || 50, offset || 0);
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('wallet:estimate-fee', async (event, { address, amountKAS }) => {
+  try {
+    const estimate = await estimateTransactionFee(address, amountKAS);
+    return { success: true, estimate };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -670,6 +730,43 @@ ipcMain.handle('wallet:remove', () => {
   }
 });
 
+// IPC Handlers - Address Book
+ipcMain.handle('wallet:addressbook:list', () => {
+  try {
+    const addresses = getAddressBook();
+    return { success: true, addresses };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('wallet:addressbook:add', async (event, { address, label, category }) => {
+  try {
+    const entry = addAddressToBook(address, label, category);
+    return { success: true, entry };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('wallet:addressbook:update', async (event, { id, updates }) => {
+  try {
+    const entry = updateAddressInBook(id, updates);
+    return { success: true, entry };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('wallet:addressbook:remove', async (event, { id }) => {
+  try {
+    const removed = removeAddressFromBook(id);
+    return { success: true, removed };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 // IPC Handlers - Node Status
 ipcMain.handle('node:status', async () => {
   try {
@@ -684,6 +781,207 @@ ipcMain.handle('node:start', async () => {
   try {
     const result = await ensureNodeRunning();
     return { success: true, result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Get node mode (public/private)
+ipcMain.handle('node:get-mode', async () => {
+  try {
+    const mode = getNodeMode();
+    return { success: true, mode };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Set node mode and restart if needed
+ipcMain.handle('node:set-mode', async (event, { mode }) => {
+  try {
+    if (mode !== 'public' && mode !== 'private') {
+      return { success: false, error: 'Mode must be "public" or "private"' };
+    }
+    
+    const currentMode = getNodeMode();
+    setNodeMode(mode);
+    
+    // Update bat file if it exists (use same path resolution as node-starter)
+    const fs = require('fs');
+    const path = require('path');
+    let baseDir;
+    let candidatePaths = [];
+    
+    if (typeof require !== 'undefined') {
+      try {
+        const { app } = require('electron');
+        if (app) {
+          // In Electron: use install dir for packaged, app path for dev
+          baseDir = app.isPackaged ? path.dirname(app.getPath('exe')) : app.getAppPath();
+          candidatePaths.push(path.join(baseDir, 'start-kaspad.bat'));
+          // Also check resources path (electron-builder extraResources)
+          const resourcesPath = app.isPackaged ? process.resourcesPath : undefined;
+          if (resourcesPath) {
+            candidatePaths.push(path.join(resourcesPath, 'start-kaspad.bat'));
+          }
+        }
+      } catch (_) {}
+    }
+    if (!baseDir) {
+      baseDir = path.join(__dirname);
+    }
+    
+    // Find existing bat file or use base directory
+    const batPath = candidatePaths.find(p => p && fs.existsSync(p)) || path.join(baseDir, 'start-kaspad.bat');
+    
+    // Update or create bat file with new mode
+    const batContent = generateBatContent(mode === 'public');
+    fs.writeFileSync(batPath, batContent, 'utf8');
+    console.log(`Updated start-kaspad.bat for ${mode} mode at ${batPath}`);
+    
+    // If mode changed and node is running, restart it
+    if (currentMode !== mode) {
+      const { isKaspadRunning } = require('./lib/node-starter');
+      const isRunning = await isKaspadRunning();
+      if (isRunning) {
+        // Restart node with new mode
+        const result = await restartNode(mode);
+        return { success: true, mode, restarted: true, result };
+      }
+    }
+    
+    return { success: true, mode, restarted: false };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Restart node (force restart regardless of mode change)
+ipcMain.handle('node:restart', async () => {
+  try {
+    const mode = getNodeMode();
+    const result = await restartNode(mode);
+    return { success: true, result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Get port information for display
+ipcMain.handle('node:get-port-info', async () => {
+  try {
+    const { KASPA_NODE_URL } = require('./lib/config');
+    const net = require('net');
+    
+    // Standard Kaspa node ports (from start-kaspad.bat)
+    const STANDARD_GRPC_PORT = 16110;  // HTTP/GRPC RPC
+    const STANDARD_P2P_PORT = 16111;   // P2P Server
+    const STANDARD_WRPC_PORT = 17110;  // WebSocket RPC (Borsh)
+    
+    // Parse WebSocket RPC port from KASPA_NODE_URL (e.g., ws://127.0.0.1:17110)
+    let wrpcPort = STANDARD_WRPC_PORT; // Default
+    if (KASPA_NODE_URL) {
+      const urlMatch = KASPA_NODE_URL.match(/:(\d+)/);
+      if (urlMatch) {
+        wrpcPort = parseInt(urlMatch[1], 10);
+      }
+    }
+    
+    // Check if ports are actually listening (optional verification)
+    const checkPort = (port) => {
+      return new Promise((resolve) => {
+        const socket = new net.Socket();
+        socket.setTimeout(500);
+        socket.once('connect', () => {
+          socket.destroy();
+          resolve(true);
+        });
+        socket.once('timeout', () => {
+          socket.destroy();
+          resolve(false);
+        });
+        socket.once('error', () => {
+          socket.destroy();
+          resolve(false);
+        });
+        socket.connect(port, '127.0.0.1');
+      });
+    };
+    
+    // Check all node ports in parallel (non-blocking, fast timeout)
+    const [grpcListening, p2pListening, wrpcListening] = await Promise.all([
+      checkPort(STANDARD_GRPC_PORT),
+      checkPort(STANDARD_P2P_PORT),
+      checkPort(wrpcPort)
+    ]);
+    
+    // Get pool status
+    const poolRunning = poolStatus.running;
+    const poolPort = poolStatus.port || null;
+    const apiPort = poolRunning ? 8080 : null; // Default API port from pool config
+    
+    return {
+      success: true,
+      // Node ports (standard)
+      grpcPort: STANDARD_GRPC_PORT,
+      p2pPort: STANDARD_P2P_PORT,
+      wrpcPort: wrpcPort,
+      // Port listening status
+      grpcListening,
+      p2pListening,
+      wrpcListening,
+      // Pool ports
+      poolPort,
+      apiPort,
+      poolRunning
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Get local IPv4 address
+ipcMain.handle('system:getLocalIp', async () => {
+  try {
+    const interfaces = os.networkInterfaces();
+    // Find the first non-internal IPv4 address (prefer non-127.x.x.x addresses)
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name]) {
+        // Skip internal (loopback) and non-IPv4 addresses
+        if (iface.family === 'IPv4' && !iface.internal) {
+          return { success: true, ip: iface.address };
+        }
+      }
+    }
+    // Fallback to first IPv4 address if no external found
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name]) {
+        if (iface.family === 'IPv4') {
+          return { success: true, ip: iface.address };
+        }
+      }
+    }
+    return { success: false, error: 'No IPv4 address found' };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Generate QR code data URL
+ipcMain.handle('qrcode:toDataURL', async (event, { text, options = {} }) => {
+  try {
+    const defaultOptions = {
+      width: options.width || 200,
+      margin: options.margin || 2,
+      color: {
+        dark: options.color?.dark || '#000000',
+        light: options.color?.light || '#FFFFFF'
+      },
+      errorCorrectionLevel: options.errorCorrectionLevel || 'M'
+    };
+    
+    const dataURL = await QRCode.toDataURL(text, defaultOptions);
+    return { success: true, dataURL };
   } catch (error) {
     return { success: false, error: error.message };
   }

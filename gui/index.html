@@ -16,7 +16,11 @@
         <div id="node-status-indicator" class="node-status-indicator">
           <span class="status-dot"></span>
           <span id="node-status-text">Checking...</span>
+          <div id="port-badges" class="port-badges"></div>
         </div>
+        <button id="node-mode-toggle" class="btn btn-secondary node-mode-toggle" title="Toggle Node Mode (Public/Private)">
+          <span id="node-mode-text">Private</span>
+        </button>
         <button id="theme-toggle" class="theme-toggle" title="Toggle Dark Mode" aria-label="Toggle Dark Mode">🌙</button>
         <button id="node-status-btn" class="btn btn-secondary">Node Details</button>
       </div>
@@ -146,58 +150,269 @@
       <div id="wallet-tab" class="tab-content">
         <div id="wallet-not-imported" class="wallet-section wallet-compact">
           <h2>Import Wallet</h2>
-          <p style="margin-bottom: 1rem;">Import your private key to use the built-in wallet</p>
-          <form id="import-wallet-form" class="wallet-form-compact">
-            <div class="form-group-compact">
-              <label>Private Key (Hex)</label>
-              <input type="password" id="private-key-input" placeholder="Enter private key" required>
-            </div>
-            <button type="submit" class="btn btn-primary">Import Wallet</button>
-          </form>
+          <p style="margin-bottom: 1rem;">Import your wallet using one of the following methods</p>
+          
+          <!-- Import Method Tabs -->
+          <div class="wallet-import-tabs" style="display:flex; gap:8px; margin-bottom:1rem; border-bottom:1px solid rgba(112,199,186,0.3);">
+            <button class="wallet-import-tab-btn active" data-method="privatekey" style="padding:8px 16px; background:transparent; border:none; border-bottom:2px solid var(--primary); color:var(--text-primary); cursor:pointer; font-size:0.9rem;">
+              Private Key
+            </button>
+            <button class="wallet-import-tab-btn" data-method="mnemonic" style="padding:8px 16px; background:transparent; border:none; border-bottom:2px solid transparent; color:var(--text-secondary); cursor:pointer; font-size:0.9rem;">
+              Mnemonic
+            </button>
+            <button class="wallet-import-tab-btn" data-method="kpub" style="padding:8px 16px; background:transparent; border:none; border-bottom:2px solid transparent; color:var(--text-secondary); cursor:pointer; font-size:0.9rem;">
+              KPUB/XPUB (Watch-only)
+            </button>
+          </div>
+          
+          <!-- Private Key Import -->
+          <div id="import-method-privatekey" class="wallet-import-method active">
+            <form id="import-wallet-form" class="wallet-form-compact">
+              <div class="form-group-compact">
+                <label>Private Key (Hex)</label>
+                <input type="password" id="private-key-input" placeholder="Enter private key (hex format)" required>
+                <small class="helper-text" style="margin-top:4px; display:block; font-size:0.85rem; color:var(--text-secondary);">
+                  Enter your 64-character hex private key
+                </small>
+              </div>
+              <button type="submit" class="btn btn-primary">Import Wallet</button>
+            </form>
+          </div>
+          
+          <!-- Mnemonic Import -->
+          <div id="import-method-mnemonic" class="wallet-import-method" style="display:none;">
+            <form id="import-mnemonic-form" class="wallet-form-compact">
+              <div class="form-group-compact">
+                <label>Mnemonic Phrase (12 or 24 words)</label>
+                <textarea id="mnemonic-input" placeholder="Enter your mnemonic phrase (12 or 24 words)" rows="3" style="width:100%; padding:0.75rem; background:rgba(0,0,0,0.2); border:1px solid rgba(112,199,186,0.3); border-radius:8px; color:var(--text-primary); font-family:inherit; resize:vertical;" required></textarea>
+                <small class="helper-text" style="margin-top:4px; display:block; font-size:0.85rem; color:var(--text-secondary);">
+                  Enter your 12 or 24-word mnemonic seed phrase (BIP39 format)
+                </small>
+              </div>
+              <div class="form-group-compact">
+                <label>Passphrase (Optional)</label>
+                <input type="password" id="mnemonic-passphrase-input" placeholder="Optional passphrase" style="width:100%;">
+                <small class="helper-text" style="margin-top:4px; display:block; font-size:0.85rem; color:var(--text-secondary);">
+                  Additional passphrase for your mnemonic (leave empty if not used)
+                </small>
+              </div>
+              <button type="submit" class="btn btn-primary">Import Wallet from Mnemonic</button>
+            </form>
+          </div>
+          
+          <!-- KPUB/XPUB Import (Watch-only) -->
+          <div id="import-method-kpub" class="wallet-import-method" style="display:none;">
+            <form id="import-kpub-form" class="wallet-form-compact">
+              <div class="form-group-compact">
+                <label>Extended Public Key (KPUB/XPUB)</label>
+                <input type="text" id="kpub-input" placeholder="Enter KPUB or XPUB (kpub... or xpub...)" style="width:100%;" required>
+                <small class="helper-text" style="margin-top:4px; display:block; font-size:0.85rem; color:var(--text-secondary);">
+                  Enter your extended public key to generate watch-only addresses
+                </small>
+              </div>
+              <div class="form-group-compact" style="display:flex; gap:12px;">
+                <div style="flex:1;">
+                  <label>Start Index</label>
+                  <input type="number" id="kpub-start-index" value="0" min="0" style="width:100%;">
+                </div>
+                <div style="flex:1;">
+                  <label>Count</label>
+                  <input type="number" id="kpub-count" value="10" min="1" max="100" style="width:100%;">
+                </div>
+              </div>
+              <div style="display:flex; gap:8px;">
+                <button type="submit" class="btn btn-primary" style="flex:1;">Generate Addresses</button>
+                <button type="button" id="clear-kpub-results" class="btn btn-secondary" style="display:none;">Clear</button>
+              </div>
+              <div id="kpub-addresses-result" style="margin-top:1rem; display:none;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+                  <h4 style="margin:0; font-size:1rem;">Generated Addresses:</h4>
+                  <button type="button" id="clear-kpub-results-inline" class="btn btn-secondary btn-sm">Clear Results</button>
+                </div>
+                <div id="kpub-addresses-list" style="background:rgba(0,0,0,0.2); border:1px solid rgba(112,199,186,0.3); border-radius:8px; padding:0.75rem; max-height:300px; overflow-y:auto;"></div>
+              </div>
+            </form>
+          </div>
         </div>
 
         <div id="wallet-imported" class="wallet-grid-container hidden">
           <!-- Balance Card -->
-          <div class="wallet-card wallet-balance-card">
-            <div class="wallet-card-header">
+          <div class="wallet-card wallet-balance-card collapsible-section">
+            <div class="wallet-card-header collapsible-header" data-target="wallet-balance-content">
               <h3>Balance</h3>
-              <div class="wallet-card-actions">
-                <button id="refresh-balance" class="btn btn-secondary btn-sm">Refresh</button>
-                <button id="wallet-remove-inline" class="btn btn-danger btn-sm">Remove</button>
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <div class="wallet-card-actions">
+                  <button id="refresh-balance" class="btn btn-secondary btn-sm">Refresh</button>
+                  <button id="wallet-remove-inline" class="btn btn-danger btn-sm">Remove</button>
+                </div>
+                <span class="collapse-icon">▼</span>
               </div>
             </div>
-            <div class="wallet-balance-display">
-              <span id="balance-amount" class="balance-value-compact">Loading...</span>
+            <div class="collapsible-content" id="wallet-balance-content">
+              <div class="wallet-balance-display">
+                <span id="balance-amount" class="balance-value-compact">Loading...</span>
+              </div>
+              <div id="balance-breakdown" class="balance-breakdown" style="display:none; margin-top:0.75rem; padding-top:0.75rem; border-top:1px solid rgba(255,255,255,0.2);">
+                <div style="display:flex; justify-content:space-between; font-size:0.85rem; margin-bottom:0.5rem;">
+                  <span style="color:rgba(255,255,255,0.8);">Confirmed:</span>
+                  <span id="balance-confirmed" style="color:rgba(255,255,255,0.95); font-weight:500;">0 KAS</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; font-size:0.85rem; margin-bottom:0.5rem;">
+                  <span style="color:rgba(255,255,255,0.8);">Pending:</span>
+                  <span id="balance-pending" style="color:rgba(255,255,255,0.95); font-weight:500;">0 KAS</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; font-size:0.85rem;">
+                  <span style="color:rgba(255,255,255,0.8);">Mature:</span>
+                  <span id="balance-mature" style="color:rgba(255,255,255,0.95); font-weight:500;">0 KAS</span>
+                </div>
+                <div id="balance-last-updated" style="font-size:0.75rem; color:rgba(255,255,255,0.7); margin-top:0.5rem; text-align:right;"></div>
+              </div>
             </div>
           </div>
 
           <!-- Address Card -->
-          <div class="wallet-card wallet-address-card">
-            <div class="wallet-card-header">
+          <div class="wallet-card wallet-address-card collapsible-section">
+            <div class="wallet-card-header collapsible-header" data-target="wallet-address-content">
               <h3>Address</h3>
-              <button id="copy-wallet-address" class="btn btn-secondary btn-sm">Copy</button>
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <button id="copy-wallet-address" class="btn btn-secondary btn-sm">Copy</button>
+                <span class="collapse-icon">▼</span>
+              </div>
             </div>
-            <div class="wallet-address-display">
-              <span id="wallet-address" class="address-text-compact"></span>
+            <div class="collapsible-content" id="wallet-address-content">
+              <div class="wallet-address-display">
+                <div class="wallet-qr-container">
+                  <canvas id="wallet-address-qrcode" class="wallet-qrcode"></canvas>
+                </div>
+                <div class="wallet-address-text-container">
+                  <span id="wallet-address" class="address-text-compact"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- KPUB Card -->
+          <div class="wallet-card wallet-kpub-card collapsible-section" id="wallet-kpub-card" style="display:none;">
+            <div class="wallet-card-header collapsible-header" data-target="wallet-kpub-content">
+              <h3>Extended Public Key (KPUB)</h3>
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <button id="copy-wallet-kpub" class="btn btn-secondary btn-sm" style="display:none;">Copy</button>
+                <span class="collapse-icon">▼</span>
+              </div>
+            </div>
+            <div class="collapsible-content" id="wallet-kpub-content">
+              <div class="wallet-kpub-display">
+                <span id="wallet-kpub" class="address-text-compact" style="font-size:0.85rem; word-break:break-all;"></span>
+                <div id="wallet-kpub-note" class="helper-text" style="margin-top:0.75rem; font-size:0.8rem; line-height:1.5;"></div>
+              </div>
             </div>
           </div>
 
           <!-- Send Funds Card -->
-          <div class="wallet-card wallet-send-card">
-            <div class="wallet-card-header">
+          <div class="wallet-card wallet-send-card collapsible-section">
+            <div class="wallet-card-header collapsible-header" data-target="wallet-send-content">
               <h3>Send Funds</h3>
+              <span class="collapse-icon">▼</span>
             </div>
-            <form id="send-funds-form" class="wallet-form-compact">
-              <div class="form-group-compact">
-                <label>To Address</label>
-                <input type="text" id="send-address" placeholder="kaspa:..." required>
+            <div class="collapsible-content" id="wallet-send-content">
+              <form id="send-funds-form" class="wallet-form-compact">
+                <div class="form-group-compact">
+                  <label>To Address</label>
+                  <div style="display:flex; gap:0.5rem;">
+                    <input type="text" id="send-address" placeholder="kaspa:..." required style="flex:1;">
+                    <select id="send-address-select" style="padding:0.5rem; border-radius:6px; background:rgba(255,255,255,0.1); border:1px solid rgba(112,199,186,0.2); color:var(--text-primary); min-width:120px;">
+                      <option value="">From Address Book</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="form-group-compact">
+                  <label>Amount (KAS)</label>
+                  <input type="number" step="0.00000001" min="0.00001" id="send-amount" placeholder="0.00" required>
+                </div>
+                <!-- Fee Estimation Display -->
+                <div id="fee-estimation" class="fee-estimation" style="display:none; margin-bottom:1rem; padding:0.75rem; background:rgba(0,0,0,0.2); border-radius:8px; border:1px solid rgba(112,199,186,0.2);">
+                  <div style="display:flex; justify-content:space-between; font-size:0.85rem; margin-bottom:0.5rem;">
+                    <span style="color:var(--text-secondary);">Estimated Fee:</span>
+                    <span id="estimated-fee-amount" style="color:#70c7ba; font-weight:500;">0 KAS</span>
+                  </div>
+                  <div style="display:flex; justify-content:space-between; font-size:0.85rem; margin-bottom:0.5rem;">
+                    <span style="color:var(--text-secondary);">Total Cost:</span>
+                    <span id="total-cost-amount" style="color:#fff; font-weight:500;">0 KAS</span>
+                  </div>
+                  <div id="fee-warning" style="display:none; font-size:0.8rem; color:#ffc107; margin-top:0.5rem; padding-top:0.5rem; border-top:1px solid rgba(255,193,7,0.3);"></div>
+                </div>
+                <button type="submit" class="btn btn-primary">Send</button>
+              </form>
+            </div>
+          </div>
+
+          <!-- Transaction History Card -->
+          <div class="wallet-card wallet-history-card collapsible-section" style="grid-column: 1 / -1;">
+            <div class="wallet-card-header collapsible-header" data-target="wallet-history-content">
+              <h3>Transaction History</h3>
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <div class="wallet-card-actions">
+                  <button id="refresh-transactions" class="btn btn-secondary btn-sm">Refresh</button>
+                </div>
+                <span class="collapse-icon">▼</span>
               </div>
-              <div class="form-group-compact">
-                <label>Amount (KAS)</label>
-                <input type="number" step="0.00000001" min="0.00001" id="send-amount" placeholder="0.00" required>
+            </div>
+            <div class="collapsible-content" id="wallet-history-content">
+              <div id="transaction-history-container" style="max-height:500px; overflow-y:auto;">
+                <div id="transaction-history-list" class="transaction-history-list">
+                  <div style="text-align:center; padding:2rem; color:var(--text-secondary);">Loading transactions...</div>
+                </div>
               </div>
-              <button type="submit" class="btn btn-primary">Send</button>
-            </form>
+              <div id="transaction-history-pagination" style="display:none; margin-top:1rem; padding-top:1rem; border-top:1px solid rgba(112,199,186,0.2); text-align:center;">
+                <button id="load-more-transactions" class="btn btn-secondary btn-sm">Load More</button>
+                <div id="transaction-history-info" style="font-size:0.85rem; color:var(--text-secondary); margin-top:0.5rem;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Address Book Card -->
+          <div class="wallet-card wallet-addressbook-card collapsible-section" style="grid-column: 1 / -1;">
+            <div class="wallet-card-header collapsible-header" data-target="wallet-addressbook-content">
+              <h3>Address Book</h3>
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <div class="wallet-card-actions">
+                  <button id="refresh-addressbook" class="btn btn-secondary btn-sm">Refresh</button>
+                </div>
+                <span class="collapse-icon">▼</span>
+              </div>
+            </div>
+            <div class="collapsible-content" id="wallet-addressbook-content">
+              <!-- Add Address Form -->
+              <form id="addressbook-add-form" class="wallet-form-compact" style="margin-bottom:1.5rem; padding:1rem; background:rgba(0,0,0,0.1); border-radius:8px;">
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem; margin-bottom:1rem;">
+                  <div class="form-group-compact">
+                    <label>Address</label>
+                    <input type="text" id="addressbook-address" placeholder="kaspa:..." required>
+                  </div>
+                  <div class="form-group-compact">
+                    <label>Label</label>
+                    <input type="text" id="addressbook-label" placeholder="My Wallet / Exchange" required>
+                  </div>
+                </div>
+                <div class="form-group-compact" style="margin-bottom:1rem;">
+                  <label>Category (optional)</label>
+                    <select id="addressbook-category" style="width:100%; padding:0.5rem; border-radius:6px; background:rgba(255,255,255,0.1); border:1px solid rgba(112,199,186,0.2); color:var(--text-primary);">
+                      <option value="General">General</option>
+                      <option value="Personal">Personal</option>
+                      <option value="Exchange">Exchange</option>
+                      <option value="Mining Pool">Mining Pool</option>
+                      <option value="Merchant">Merchant</option>
+                      <option value="Other">Other</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-primary">Add Address</button>
+              </form>
+
+              <!-- Address List -->
+              <div id="addressbook-list" style="max-height:400px; overflow-y:auto;">
+                <div style="text-align:center; padding:2rem; color:var(--text-secondary);">No addresses saved. Add your first address above.</div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -361,7 +576,12 @@
                   <div class="code-box"><code id="pool-connect-local">stratum+tcp://127.0.0.1:7777</code></div>
                 </div>
                 <div>
-                  <div class="detail-label" style="margin-bottom:6px;">LAN miners (replace with your PC IP)</div>
+                  <div class="detail-label" style="margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
+                    <span>Click Auto-detect to get your PC's IP address</span>
+                    <button id="pool-detect-ip" class="btn btn-secondary" style="padding:4px 12px; font-size:0.85rem;">
+                      Auto-Detect IP
+                    </button>
+                  </div>
                   <div class="code-box"><code id="pool-connect-lan">stratum+tcp://YOUR_PC_IP:7777</code></div>
                 </div>
                 <div>

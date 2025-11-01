@@ -20,16 +20,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Wallet management
   wallet: {
     import: (privateKeyHex) => ipcRenderer.invoke('wallet:import', privateKeyHex),
+    importMnemonic: (mnemonic, passphrase) => ipcRenderer.invoke('wallet:import-mnemonic', { mnemonic, passphrase }),
+    generateAddressesKpub: (kpub, startIndex, count) => ipcRenderer.invoke('wallet:generate-addresses-kpub', { kpub, startIndex, count }),
+    detectKPUBFormat: (extendedKey) => ipcRenderer.invoke('wallet:detect-kpub-format', extendedKey),
+    detectWalletType: (extendedKey, mnemonic) => ipcRenderer.invoke('wallet:detect-wallet-type', { extendedKey, mnemonic }),
     info: () => ipcRenderer.invoke('wallet:info'),
     balance: () => ipcRenderer.invoke('wallet:balance'),
+    transactionHistory: (limit, offset) => ipcRenderer.invoke('wallet:transaction-history', { limit, offset }),
+    estimateFee: (address, amountKAS) => ipcRenderer.invoke('wallet:estimate-fee', { address, amountKAS }),
     send: (address, amountKAS) => ipcRenderer.invoke('wallet:send', { address, amountKAS }),
     remove: () => ipcRenderer.invoke('wallet:remove'),
+    addressBook: {
+      list: () => ipcRenderer.invoke('wallet:addressbook:list'),
+      add: (address, label, category) => ipcRenderer.invoke('wallet:addressbook:add', { address, label, category }),
+      update: (id, updates) => ipcRenderer.invoke('wallet:addressbook:update', { id, updates }),
+      remove: (id) => ipcRenderer.invoke('wallet:addressbook:remove', { id }),
+    },
   },
   
   // Node status
   node: {
     status: () => ipcRenderer.invoke('node:status'),
     start: () => ipcRenderer.invoke('node:start'),
+    getPortInfo: () => ipcRenderer.invoke('node:get-port-info'),
+    getMode: () => ipcRenderer.invoke('node:get-mode'),
+    setMode: (mode) => ipcRenderer.invoke('node:set-mode', { mode }),
+    restart: () => ipcRenderer.invoke('node:restart'),
     onStatusUpdate: (callback) => {
       ipcRenderer.on('node-status-update', (event, data) => callback(data));
     }
@@ -45,6 +61,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       get: () => ipcRenderer.invoke('pool:config:get'),
       update: (partial) => ipcRenderer.invoke('pool:config:update', partial)
     }
+  },
+
+  // System utilities
+  system: {
+    getLocalIp: () => ipcRenderer.invoke('system:getLocalIp')
+  },
+  
+  // QR Code generation (via main process)
+  qrcode: {
+    toDataURL: (text, options) => ipcRenderer.invoke('qrcode:toDataURL', { text, options })
   }
 });
 

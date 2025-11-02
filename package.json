@@ -52,7 +52,20 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": true,
+      "runAfterFinish": false,
+      "installerIcon": "assets/icon.ico",
+      "uninstallDisplayName": "Kaspa Mixer",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Kaspa Mixer",
+      "installerHeaderIcon": "assets/icon.ico"
     },
     "files": [
       "electron-main.js",

@@ -425,7 +425,132 @@ async function startPool(opts = {}) {
   }
   
   const port = Number(opts.port || 7777);
-  const cwd = path.join(__dirname, 'pool');
+  // Use a writable directory for pool working directory
+  // In packaged apps, Program Files is read-only, so we need to use userData
+  let cwd;
+  if (app.isPackaged) {
+    // Use userData directory for pool files (writable location)
+    const userDataDir = app.getPath('userData');
+    cwd = path.join(userDataDir, 'pool-runtime');
+    
+    // Ensure the directory exists
+    if (!fs.existsSync(cwd)) {
+      fs.mkdirSync(cwd, { recursive: true });
+    }
+    
+    // Get resources path for copying files
+    const exeDir = path.dirname(app.getPath('exe'));
+    const resourcesPath = process.resourcesPath || path.join(exeDir, 'resources');
+    
+    // Copy pool TypeScript files from installation to runtime directory if needed
+    const poolSourceDir = path.join(resourcesPath, 'app.asar.unpacked', 'pool');
+    if (fs.existsSync(poolSourceDir)) {
+      // Copy index.ts and src/ directory if not already present
+      const indexSource = path.join(poolSourceDir, 'index.ts');
+      const indexDest = path.join(cwd, 'index.ts');
+      if (fs.existsSync(indexSource) && !fs.existsSync(indexDest)) {
+        fs.copyFileSync(indexSource, indexDest);
+        console.log('[Pool] Copied pool index.ts to runtime directory');
+      }
+      
+      const srcSource = path.join(poolSourceDir, 'src');
+      const srcDest = path.join(cwd, 'src');
+      if (fs.existsSync(srcSource) && !fs.existsSync(srcDest)) {
+        // Copy entire src directory recursively
+        const copyDir = (src, dest) => {
+          if (!fs.existsSync(dest)) {
+            fs.mkdirSync(dest, { recursive: true });
+          }
+          const entries = fs.readdirSync(src, { withFileTypes: true });
+          for (const entry of entries) {
+            const srcPath = path.join(src, entry.name);
+            const destPath = path.join(dest, entry.name);
+            if (entry.isDirectory()) {
+              copyDir(srcPath, destPath);
+            } else {
+              fs.copyFileSync(srcPath, destPath);
+            }
+          }
+        };
+        copyDir(srcSource, srcDest);
+        console.log('[Pool] Copied pool src/ directory to runtime directory');
+      }
+      
+      // Copy wasm directory
+      const wasmSource = path.join(poolSourceDir, 'wasm');
+      const wasmDest = path.join(cwd, 'wasm');
+      if (fs.existsSync(wasmSource) && !fs.existsSync(wasmDest)) {
+        const copyDir = (src, dest) => {
+          if (!fs.existsSync(dest)) {
+            fs.mkdirSync(dest, { recursive: true });
+          }
+          const entries = fs.readdirSync(src, { withFileTypes: true });
+          for (const entry of entries) {
+            const srcPath = path.join(src, entry.name);
+            const destPath = path.join(dest, entry.name);
+            if (entry.isDirectory()) {
+              copyDir(srcPath, destPath);
+            } else {
+              fs.copyFileSync(srcPath, destPath);
+            }
+          }
+        };
+        copyDir(wasmSource, wasmDest);
+        console.log('[Pool] Copied pool wasm/ directory to runtime directory');
+      }
+      
+      // Copy kaspa directory to runtime directory so relative imports work
+      // The pool wasm/kaspa.ts imports from '../../kaspa/kaspa.js'
+      // When pool runs from userData, we need kaspa to be accessible
+      const kaspaSourceDir = path.join(resourcesPath, 'kaspa');
+      const kaspaDest = path.join(cwd, '..', 'kaspa');
+      if (fs.existsSync(kaspaSourceDir) && !fs.existsSync(kaspaDest)) {
+        // Copy kaspa directory to userData (parent of pool-runtime)
+        const copyDir = (src, dest) => {
+          if (!fs.existsSync(dest)) {
+            fs.mkdirSync(dest, { recursive: true });
+          }
+          const entries = fs.readdirSync(src, { withFileTypes: true });
+          for (const entry of entries) {
+            const srcPath = path.join(src, entry.name);
+            const destPath = path.join(dest, entry.name);
+            if (entry.isDirectory()) {
+              copyDir(srcPath, destPath);
+            } else {
+              fs.copyFileSync(srcPath, destPath);
+            }
+          }
+        };
+        copyDir(kaspaSourceDir, kaspaDest);
+        console.log('[Pool] Copied kaspa/ directory to userData for pool imports');
+      }
+      
+      // Also try copying from app.asar.unpacked/kaspa
+      const kaspaUnpackedSource = path.join(resourcesPath, 'app.asar.unpacked', 'kaspa');
+      if (fs.existsSync(kaspaUnpackedSource) && !fs.existsSync(kaspaDest)) {
+        const copyDir = (src, dest) => {
+          if (!fs.existsSync(dest)) {
+            fs.mkdirSync(dest, { recursive: true });
+          }
+          const entries = fs.readdirSync(src, { withFileTypes: true });
+          for (const entry of entries) {
+            const srcPath = path.join(src, entry.name);
+            const destPath = path.join(dest, entry.name);
+            if (entry.isDirectory()) {
+              copyDir(srcPath, destPath);
+            } else {
+              fs.copyFileSync(srcPath, destPath);
+            }
+          }
+        };
+        copyDir(kaspaUnpackedSource, kaspaDest);
+        console.log('[Pool] Copied kaspa/ directory from unpacked to userData');
+      }
+    }
+  } else {
+    // Development mode: use the pool directory in the project
+    cwd = path.join(__dirname, 'pool');
+  }
   const bunCmd = process.platform === 'win32' ? 'bun.exe' : 'bun';
   
   // Try to find bun executable
@@ -842,16 +967,39 @@ async function startPool(opts = {}) {
   const args = ['run', entry];
   
   // Determine the app root directory (where node_modules would be)
+  // For packaged apps, we need to point to the installation directory, not userData
   let appRoot = __dirname;
+  let resourcesPath = process.resourcesPath;
+  
   if (app.isPackaged) {
-    // In packaged app, we're in resources/app.asar (unpacked) or resources/app
-    appRoot = path.resolve(__dirname, '..');
+    // In packaged app, __dirname is inside app.asar or app.asar.unpacked
+    // We need to get to the installation directory
+    const exeDir = path.dirname(app.getPath('exe'));
+    appRoot = exeDir;
+    // node_modules and kaspa are in resources/app.asar.unpacked
+    resourcesPath = process.resourcesPath || path.join(exeDir, 'resources');
   }
   
   // Ensure Bun can find node_modules (decimal.js, etc.)
-  // Also set paths for kaspa directory resolution
-  const nodeModulesPath = path.join(appRoot, 'node_modules');
-  const kaspaPath = path.join(appRoot, 'kaspa');
+  // In packaged apps, node_modules is in app.asar.unpacked
+  let nodeModulesPath;
+  if (app.isPackaged && resourcesPath) {
+    nodeModulesPath = path.join(resourcesPath, 'app.asar.unpacked', 'node_modules');
+  } else {
+    nodeModulesPath = path.join(appRoot, 'node_modules');
+  }
+  
+  // Kaspa SDK location
+  let kaspaPath;
+  if (app.isPackaged && resourcesPath) {
+    // Try unpacked kaspa first, then resources/kaspa
+    kaspaPath = path.join(resourcesPath, 'app.asar.unpacked', 'kaspa');
+    if (!fs.existsSync(path.join(kaspaPath, 'kaspa.js'))) {
+      kaspaPath = path.join(resourcesPath, 'kaspa');
+    }
+  } else {
+    kaspaPath = path.join(appRoot, 'kaspa');
+  }
   
   // Verify critical dependencies exist
   const decimalJsPath = path.join(nodeModulesPath, 'decimal.js');

@@ -75,9 +75,9 @@
         "filter": ["start-kaspad.bat"]
       },
       {
-        "from": "bun/bun.exe",
+        "from": "bun",
         "to": "bun",
-        "filter": ["bun.exe"]
+        "filter": ["**/*"]
       }
     ],
     "extraResources": [

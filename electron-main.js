@@ -1656,38 +1656,46 @@ ipcMain.handle('node:set-mode', async (event, { mode }) => {
     const currentMode = getNodeMode();
     setNodeMode(mode);
     
-    // Update bat file if it exists (use same path resolution as node-starter)
+    // Find kaspad.exe and create/update batch file in writable location
     const fs = require('fs');
     const path = require('path');
-    let baseDir;
-    let candidatePaths = [];
+    let kaspadExePath;
+    let batPath;
     
-    if (typeof require !== 'undefined') {
-      try {
-        const { app } = require('electron');
-        if (app) {
-          // In Electron: use install dir for packaged, app path for dev
-          baseDir = app.isPackaged ? path.dirname(app.getPath('exe')) : app.getAppPath();
-          candidatePaths.push(path.join(baseDir, 'start-kaspad.bat'));
-          // Also check resources path (electron-builder extraResources)
-          const resourcesPath = app.isPackaged ? process.resourcesPath : undefined;
-          if (resourcesPath) {
-            candidatePaths.push(path.join(resourcesPath, 'start-kaspad.bat'));
-          }
-        }
-      } catch (_) {}
+    if (app.isPackaged) {
+      const exeDir = path.dirname(app.getPath('exe'));
+      const resourcesPath = process.resourcesPath || path.join(exeDir, 'resources');
+      
+      // Find kaspad.exe
+      const kaspadCandidates = [
+        path.join(exeDir, 'kaspad.exe'),
+        path.join(resourcesPath, 'kaspad.exe'),
+        path.join(resourcesPath, 'kaspa', 'kaspad.exe')
+      ];
+      kaspadExePath = kaspadCandidates.find(p => fs.existsSync(p));
+      
+      // Create batch file in userData (writable location, not Program Files)
+      const userDataDir = app.getPath('userData');
+      batPath = path.join(userDataDir, 'start-kaspad.bat');
+    } else {
+      // Development mode
+      kaspadExePath = path.join(__dirname, 'kaspad.exe');
+      if (!fs.existsSync(kaspadExePath)) {
+        kaspadExePath = path.join(__dirname, 'kaspa', 'kaspad.exe');
+      }
+      batPath = path.join(__dirname, 'start-kaspad.bat');
     }
-    if (!baseDir) {
-      baseDir = path.join(__dirname);
+    
+    if (!kaspadExePath || !fs.existsSync(kaspadExePath)) {
+      console.error('[Node Mode] kaspad.exe not found');
+      return { success: false, error: 'kaspad.exe not found' };
     }
     
-    // Find existing bat file or use base directory
-    const batPath = candidatePaths.find(p => p && fs.existsSync(p)) || path.join(baseDir, 'start-kaspad.bat');
-    
-    // Update or create bat file with new mode
-    const batContent = generateBatContent(mode === 'public');
+    // Generate batch file with full path to kaspad.exe
+    const { generateBatContent } = require('./lib/node-starter');
+    const batContent = generateBatContent(mode === 'public', kaspadExePath);
     fs.writeFileSync(batPath, batContent, 'utf8');
-    console.log(`Updated start-kaspad.bat for ${mode} mode at ${batPath}`);
+    console.log(`[Node Mode] Created/updated start-kaspad.bat for ${mode} mode at ${batPath}`);
     
     // If mode changed and node is running, restart it
     if (currentMode !== mode) {

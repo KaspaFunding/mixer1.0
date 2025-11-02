@@ -19,10 +19,20 @@ console.log('Fetching Bun runtime...');
 console.log(`Download URL: ${BUN_URL}`);
 console.log(`Output directory: ${OUTPUT_DIR}`);
 
-// Check if Bun already exists
+// Check if Bun already exists and is valid
 if (fs.existsSync(BUN_EXE_PATH)) {
-  console.log('✓ Bun already exists, skipping download');
-  process.exit(0);
+  try {
+    // Verify it's actually executable
+    const stats = fs.statSync(BUN_EXE_PATH);
+    if (stats.isFile() && stats.size > 0) {
+      console.log(`✓ Bun already exists at ${BUN_EXE_PATH} (${(stats.size / 1024 / 1024).toFixed(2)} MB), skipping download`);
+      process.exit(0);
+    } else {
+      console.warn('Bun file exists but appears invalid, will re-download...');
+    }
+  } catch (err) {
+    console.warn('Could not verify existing Bun, will re-download:', err.message);
+  }
 }
 
 // Download Bun zip file
@@ -200,13 +210,40 @@ async function main() {
     }
     
     if (!fs.existsSync(actualBunPath)) {
+      console.error(`ERROR: Bun executable not found at ${BUN_EXE_PATH} or any subdirectory after extraction`);
+      console.error(`Checked extraction directory: ${BUN_EXTRACT_DIR}`);
+      if (fs.existsSync(BUN_EXTRACT_DIR)) {
+        console.error('Contents of extraction directory:');
+        try {
+          const contents = fs.readdirSync(BUN_EXTRACT_DIR, { withFileTypes: true });
+          contents.forEach(item => {
+            const fullPath = path.join(BUN_EXTRACT_DIR, item.name);
+            if (item.isDirectory()) {
+              console.error(`  DIR: ${item.name}/`);
+            } else {
+              console.error(`  FILE: ${item.name} (${(fs.statSync(fullPath).size / 1024).toFixed(2)} KB)`);
+            }
+          });
+        } catch (e) {
+          console.error(`  (Could not list directory: ${e.message})`);
+        }
+      }
       throw new Error(`Bun executable not found at ${BUN_EXE_PATH} or any subdirectory after extraction`);
     }
     
+    // Final verification: try to check if it's actually executable
+    const bunStats = fs.statSync(actualBunPath);
+    if (bunStats.size < 1000000) { // Less than 1MB is suspicious
+      throw new Error(`Bun executable at ${actualBunPath} appears too small (${bunStats.size} bytes). Download may have failed.`);
+    }
+    
     console.log(`✓ Bun successfully downloaded and extracted to: ${actualBunPath}`);
-    console.log(`  File size: ${(fs.statSync(actualBunPath).size / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`  File size: ${(bunStats.size / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`  Ready for bundling in installer.`);
   } catch (error) {
     console.error('Error fetching Bun:', error.message);
+    console.error('This will prevent the installer from including Bun.');
+    console.error('Please ensure Bun is downloaded before building the installer.');
     process.exit(1);
   }
 }

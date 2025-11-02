@@ -455,24 +455,55 @@ async function startPool(opts = {}) {
   
   // First, try to find bun in PATH or common locations
   // Also check for locally bundled/downloaded Bun in app directory
-  const appDir = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
-  const localBunPath = path.join(appDir, 'bun.exe');
-  const localBunDir = path.join(appDir, 'bun', 'bun.exe');
+  // In packaged apps, extraFiles places files next to the .exe
+  let appDir;
+  let possibleBunPaths = []; // Will be used for error messages if Bun not found
+  
+  if (app.isPackaged) {
+    // For packaged apps, check multiple possible locations
+    appDir = path.dirname(app.getPath('exe'));
+    const resourcesPath = process.resourcesPath;
+    console.log(`[Pool] Packaged app detected - Checking for Bun...`);
+    console.log(`[Pool] App directory: ${appDir}`);
+    console.log(`[Pool] Resources path: ${resourcesPath}`);
+    
+    // Check multiple possible locations for bundled Bun in packaged apps
+    possibleBunPaths = [
+      path.join(appDir, 'bun', 'bun.exe'),           // extraFiles location (next to exe)
+      path.join(appDir, 'bun.exe'),                   // Direct in app dir
+      path.join(resourcesPath || '', 'bun', 'bun.exe'), // Resources path
+      path.join(resourcesPath || '', 'bun.exe'),
+    ];
+  } else {
+    appDir = __dirname;
+    console.log(`[Pool] Development mode - App directory: ${appDir}`);
+    
+    // Check development locations
+    possibleBunPaths = [
+      path.join(appDir, 'bun', 'bun.exe'),           // Development location
+      path.join(appDir, 'bun.exe'),
+    ];
+  }
   
   // Check for locally bundled Bun first (for both dev and packaged apps)
   // Priority: bundled Bun > system PATH > common locations > auto-install
-  if (fs.existsSync(localBunDir)) {
-    if (checkBunPath(localBunDir)) {
-      bun = localBunDir;
-      bunFound = true;
-      console.log(`[Pool] ✓ Found bundled Bun at: ${bun}`);
+  console.log(`[Pool] Checking ${possibleBunPaths.length} possible Bun locations...`);
+  for (const bunPath of possibleBunPaths) {
+    if (fs.existsSync(bunPath)) {
+      console.log(`[Pool] Found Bun candidate at: ${bunPath}`);
+      if (checkBunPath(bunPath)) {
+        bun = bunPath;
+        bunFound = true;
+        console.log(`[Pool] ✓ Found bundled Bun at: ${bun}`);
+        break;
+      } else {
+        console.log(`[Pool] ✗ Bun at ${bunPath} exists but is not executable`);
+      }
     }
-  } else if (fs.existsSync(localBunPath)) {
-    if (checkBunPath(localBunPath)) {
-      bun = localBunPath;
-      bunFound = true;
-      console.log(`[Pool] ✓ Found bundled Bun at: ${bun}`);
-    }
+  }
+  
+  if (!bunFound) {
+    console.log(`[Pool] Bundled Bun not found in any of the checked locations`);
   }
   
   // If not found locally, try system-wide installation
@@ -772,9 +803,25 @@ async function startPool(opts = {}) {
   
   // Final verification that we have a valid Bun executable
   if (!bunFound) {
+    const checkedPathsMsg = possibleBunPaths.map((p, i) => `  ${i + 1}. ${p}${fs.existsSync(p) ? ' (exists but not executable)' : ' (not found)'}`).join('\n');
+    
+    const errorMsg = app.isPackaged
+      ? `Bun runtime not found in bundled installation.\n\n` +
+        `Checked the following ${possibleBunPaths.length} locations:\n${checkedPathsMsg}\n\n` +
+        `This indicates Bun was not included in the installer build.\n\n` +
+        `Please rebuild the installer with: npm run build:gui\n\n` +
+        `For now, you can manually install Bun:\n` +
+        `1. Open PowerShell as Administrator\n` +
+        `2. Run: powershell -c "irm bun.sh/install.ps1 | iex"\n` +
+        `3. Restart this application`
+      : `Bun runtime not found and automatic installation was not successful.\n\n` +
+        `Checked locations:\n${checkedPathsMsg}\n\n` +
+        `Please install Bun manually from https://bun.sh/install\n\n` +
+        `Windows: Open PowerShell and run:\n  powershell -c "irm bun.sh/install.ps1 | iex"`;
+    
     return {
       started: false,
-      error: `Bun runtime not found and automatic installation was not successful. Please install Bun manually from https://bun.sh/install\n\nWindows: Open PowerShell and run:\n  powershell -c "irm bun.sh/install.ps1 | iex"`
+      error: errorMsg
     };
   }
   

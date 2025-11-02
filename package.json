@@ -92,6 +92,11 @@
         "from": "kaspa/kaspad.exe",
         "to": ".",
         "filter": ["kaspad.exe"]
+      },
+      {
+        "from": "bun",
+        "to": "bun",
+        "filter": ["**/*"]
       }
     ],
     "asarUnpack": [

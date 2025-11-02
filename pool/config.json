@@ -1,7 +1,7 @@
 {
   "node": "ws://127.0.0.1:17110",
   "treasury": {
-    "privateKey": "",
+    "privateKey": "0930f6611869f3fd2bb7516f4454174ac3b111fd5d407b055a6df110faf0b9f1",
     "fee": 1,
     "rewarding": {
       "paymentThreshold": "400000000"

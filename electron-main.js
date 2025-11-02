@@ -454,72 +454,96 @@ async function startPool(opts = {}) {
   };
   
   // First, try to find bun in PATH or common locations
-  try {
-    const { execSync } = require('child_process');
-    if (process.platform === 'win32') {
-      try {
-        // On Windows, use 'where' command to find bun in PATH
-        const whereOutput = execSync(`where ${bunCmd}`, { stdio: 'pipe', encoding: 'utf8', timeout: 5000 }).trim();
-        if (whereOutput) {
-          const bunPathFromWhere = whereOutput.split('\n')[0].trim();
-          if (bunPathFromWhere && checkBunPath(bunPathFromWhere)) {
-            bun = bunPathFromWhere;
-            bunFound = true;
-            console.log(`[Pool] Found Bun in PATH at: ${bun}`);
-          } else if (checkBunPath(bunCmd)) {
-            // Try using just the command name
-            bun = bunCmd;
-            bunFound = true;
+  // Also check for locally bundled/downloaded Bun in app directory
+  const appDir = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
+  const localBunPath = path.join(appDir, 'bun.exe');
+  const localBunDir = path.join(appDir, 'bun', 'bun.exe');
+  
+  // Check for locally bundled Bun first (for both dev and packaged apps)
+  // Priority: bundled Bun > system PATH > common locations > auto-install
+  if (fs.existsSync(localBunDir)) {
+    if (checkBunPath(localBunDir)) {
+      bun = localBunDir;
+      bunFound = true;
+      console.log(`[Pool] ✓ Found bundled Bun at: ${bun}`);
+    }
+  } else if (fs.existsSync(localBunPath)) {
+    if (checkBunPath(localBunPath)) {
+      bun = localBunPath;
+      bunFound = true;
+      console.log(`[Pool] ✓ Found bundled Bun at: ${bun}`);
+    }
+  }
+  
+  // If not found locally, try system-wide installation
+  if (!bunFound) {
+    try {
+      const { execSync } = require('child_process');
+      if (process.platform === 'win32') {
+        try {
+          // On Windows, use 'where' command to find bun in PATH
+          const whereOutput = execSync(`where ${bunCmd}`, { stdio: 'pipe', encoding: 'utf8', timeout: 5000 }).trim();
+          if (whereOutput) {
+            const bunPathFromWhere = whereOutput.split('\n')[0].trim();
+            if (bunPathFromWhere && checkBunPath(bunPathFromWhere)) {
+              bun = bunPathFromWhere;
+              bunFound = true;
+              console.log(`[Pool] Found Bun in PATH at: ${bun}`);
+            } else if (checkBunPath(bunCmd)) {
+              // Try using just the command name
+              bun = bunCmd;
+              bunFound = true;
+              console.log(`[Pool] Found Bun in PATH`);
+            }
+          }
+        } catch (e) {
+          // Not in PATH, check common installation locations
+          const commonPaths = [
+            path.join(process.env.USERPROFILE || '', 'AppData', 'Local', 'bun', 'bun.exe'),
+            path.join(process.env.USERPROFILE || '', '.bun', 'bin', 'bun.exe'),
+            path.join('C:', 'Program Files', 'bun', 'bun.exe'),
+            path.join('C:', 'Program Files (x86)', 'bun', 'bun.exe'),
+          ];
+          
+          for (const bunPath of commonPaths) {
+            if (checkBunPath(bunPath)) {
+              bun = bunPath;
+              bunFound = true;
+              console.log(`[Pool] Found Bun at: ${bun}`);
+              break;
+            }
+          }
+        }
+      } else {
+        // Unix-like systems: try 'which' command
+        try {
+          execSync(`which ${bunCmd}`, { stdio: 'ignore' });
+          bun = bunCmd;
+          bunFound = checkBunPath(bun);
+          if (bunFound) {
             console.log(`[Pool] Found Bun in PATH`);
           }
-        }
-      } catch (e) {
-        // Not in PATH, check common installation locations
-        const commonPaths = [
-          path.join(process.env.USERPROFILE || '', 'AppData', 'Local', 'bun', 'bun.exe'),
-          path.join(process.env.USERPROFILE || '', '.bun', 'bin', 'bun.exe'),
-          path.join('C:', 'Program Files', 'bun', 'bun.exe'),
-          path.join('C:', 'Program Files (x86)', 'bun', 'bun.exe'),
-        ];
-        
-        for (const bunPath of commonPaths) {
-          if (checkBunPath(bunPath)) {
-            bun = bunPath;
-            bunFound = true;
-            console.log(`[Pool] Found Bun at: ${bun}`);
-            break;
+        } catch (e) {
+          // Check common Unix locations
+          const commonPaths = [
+            path.join(process.env.HOME || '', '.bun', 'bin', 'bun'),
+            '/usr/local/bin/bun',
+            '/opt/bun/bin/bun',
+          ];
+          
+          for (const bunPath of commonPaths) {
+            if (checkBunPath(bunPath)) {
+              bun = bunPath;
+              bunFound = true;
+              console.log(`[Pool] Found Bun at: ${bun}`);
+              break;
+            }
           }
         }
       }
-    } else {
-      // Unix-like systems: try 'which' command
-      try {
-        execSync(`which ${bunCmd}`, { stdio: 'ignore' });
-        bun = bunCmd;
-        bunFound = checkBunPath(bun);
-        if (bunFound) {
-          console.log(`[Pool] Found Bun in PATH`);
-        }
-      } catch (e) {
-        // Check common Unix locations
-        const commonPaths = [
-          path.join(process.env.HOME || '', '.bun', 'bin', 'bun'),
-          '/usr/local/bin/bun',
-          '/opt/bun/bin/bun',
-        ];
-        
-        for (const bunPath of commonPaths) {
-          if (checkBunPath(bunPath)) {
-            bun = bunPath;
-            bunFound = true;
-            console.log(`[Pool] Found Bun at: ${bun}`);
-            break;
-          }
-        }
-      }
+    } catch (err) {
+      console.warn('[Pool] Could not verify Bun installation:', err.message);
     }
-  } catch (err) {
-    console.warn('[Pool] Could not verify Bun installation:', err.message);
   }
   
   // If Bun not found, attempt automatic installation

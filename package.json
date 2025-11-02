@@ -20,7 +20,7 @@
   },
   "scripts": {
     "prebuild": "node scripts/embed-wasm.js",
-    "prebuild:gui": "node scripts/fetch-kaspad.js",
+    "prebuild:gui": "node scripts/fetch-kaspad.js && node scripts/fetch-bun.js",
     "build": "pkg . --targets node18-win-x64 --output mixer-cli.exe",
     "build:all": "pkg . --targets node18-win-x64,node18-linux-x64,node18-macos-x64",
     "start": "node index.js",
@@ -73,6 +73,11 @@
         "from": "start-kaspad.bat",
         "to": ".",
         "filter": ["start-kaspad.bat"]
+      },
+      {
+        "from": "bun/bun.exe",
+        "to": "bun",
+        "filter": ["bun.exe"]
       }
     ],
     "extraResources": [

@@ -251,6 +251,49 @@ export default class Server extends Stratum {
                 const responseJson = JSON.stringify(response) + '\n'
                 socket.write(responseJson)
                 console.log(`[${new Date().toISOString()}] Response sent to ${socket.remoteAddress}:${socket.remotePort} for ${message.method}`)
+                
+                // Send notifications and job AFTER subscribe response (correct Stratum order)
+                if (message.method === 'mining.subscribe' && socket.data?.pendingNotifications) {
+                  // @ts-ignore
+                  if (socket.readyState === 1) {
+                    try {
+                      // Send set_extranonce notification (after subscribe response)
+                      let extranonceEvent: Event<'set_extranonce'>
+                      
+                      if (socket.data.encoding === Encoding.Bitmain && socket.data.extraNonce !== '') {
+                        const extranonce2Size = 8 - Math.floor(socket.data.extraNonce.length / 2)
+                        const params: [string, number] = [socket.data.extraNonce, extranonce2Size]
+                        extranonceEvent = { method: 'set_extranonce', params: params }
+                      } else {
+                        const params: [string] = [socket.data.extraNonce]
+                        extranonceEvent = { method: 'set_extranonce', params: params }
+                      }
+                      const extranonceJson = JSON.stringify(extranonceEvent) + '\n'
+                      socket.write(extranonceJson)
+                      console.log(`[${new Date().toISOString()}] Sent set_extranonce: ${extranonceJson.trim()}`)
+                      
+                      // Send mining.set_difficulty notification
+                      const difficultyEvent: Event<'mining.set_difficulty'> = {
+                        method: 'mining.set_difficulty',
+                        params: [socket.data.difficulty.toNumber()]
+                      }
+                      const difficultyJson = JSON.stringify(difficultyEvent) + '\n'
+                      socket.write(difficultyJson)
+                      console.log(`[${new Date().toISOString()}] Sent mining.set_difficulty: ${difficultyJson.trim()}`)
+                      
+                      // Now send the job (after notifications)
+                      if (socket.data?.pendingJob) {
+                        console.log(`[${new Date().toISOString()}] Sending job after notifications to ${socket.remoteAddress}:${socket.remotePort}`)
+                        this.sendCurrentJobToSocket(socket)
+                      }
+                      
+                      socket.data.pendingNotifications = false
+                      console.log(`[${new Date().toISOString()}] Subscribe handshake complete for ${socket.remoteAddress}:${socket.remotePort}`)
+                    } catch (err) {
+                      console.error(`Failed to send notifications/job after subscribe response:`, err)
+                    }
+                  }
+                }
               } catch (writeError) {
                 console.error(`Failed to write to ${socket.remoteAddress}:${socket.remotePort}:`, writeError)
                 socket.end()
@@ -399,49 +442,26 @@ export default class Server extends Stratum {
           }
         }
         
-        // CRITICAL: Send set_extranonce and difficulty IMMEDIATELY after subscribe response
-        // Many ASICs (including Iceriver) timeout if they don't receive these immediately
-        // These MUST be sent synchronously before we return from this handler
-        // @ts-ignore - socket.readyState check
+        // Store flags for sending notifications and job AFTER the subscribe response
+        // CRITICAL: Order must be: 1) Subscribe response, 2) Notifications, 3) Job
+        // Some ASICs (like KS5) are strict about message ordering
+        socket.data.pendingJob = true
+        socket.data.pendingNotifications = true
+      } else if ((request as any).method === 'mining.authorize') {
+        this.authorize(socket, (request as any).params[0])
+        response.result = true
+        
+        // CRITICAL: Send job immediately after authorize for KS5 compatibility
+        // KS5 appears to require authorize before accepting jobs
+        // @ts-ignore
         if (socket.readyState === 1) {
-          try {
-            // Send set_extranonce notification
-            // TypeScript-friendly approach: create event with proper union type matching
-            let extranonceEvent: Event<'set_extranonce'>
-            
-            if (socket.data.encoding === Encoding.Bitmain && socket.data.extraNonce !== '') {
-              const extranonce2Size = 8 - Math.floor(socket.data.extraNonce.length / 2)
-              // Create params tuple that matches the union type [string, number]
-              const params: [string, number] = [socket.data.extraNonce, extranonce2Size]
-              extranonceEvent = {
-                method: 'set_extranonce',
-                params: params
-              }
-            } else {
-              // Create params tuple that matches the union type [string]
-              const params: [string] = [socket.data.extraNonce]
-              extranonceEvent = {
-                method: 'set_extranonce',
-                params: params
-              }
-            }
-            const extranonceJson = JSON.stringify(extranonceEvent) + '\n'
-            socket.write(extranonceJson)
-            console.log(`[${new Date().toISOString()}] Sent set_extranonce: ${extranonceJson.trim()}`)
-            
-            // Send mining.set_difficulty notification
-            const difficultyEvent: Event<'mining.set_difficulty'> = {
-              method: 'mining.set_difficulty',
-              params: [socket.data.difficulty.toNumber()]
-            }
-            const difficultyJson = JSON.stringify(difficultyEvent) + '\n'
-            socket.write(difficultyJson)
-            console.log(`[${new Date().toISOString()}] Sent mining.set_difficulty: ${difficultyJson.trim()}`)
-            
-            console.log(`[${new Date().toISOString()}] Subscribe handshake complete for ${socket.remoteAddress}:${socket.remotePort}`)
-          } catch (err) {
-            console.error(`Failed to send extranonce/difficulty after subscribe:`, err)
-          }
+          console.log(`[${new Date().toISOString()}] Sending job after mining.authorize for ${socket.remoteAddress}:${socket.remotePort}`)
+          this.sendCurrentJobToSocket(socket)
+        }
+        
+        // Clear pending job flag
+        if (socket.data?.pendingJob) {
+          socket.data.pendingJob = false
         }
       } else {
         // Unknown method - return error instead of silent failure

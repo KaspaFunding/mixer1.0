@@ -60,6 +60,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     config: {
       get: () => ipcRenderer.invoke('pool:config:get'),
       update: (partial) => ipcRenderer.invoke('pool:config:update', partial)
+    },
+    miner: {
+      updatePaymentInterval: (address, intervalHours, verificationIP) => ipcRenderer.invoke('pool:miner:update-payment-interval', { address, intervalHours, verificationIP }),
+      get: (address) => ipcRenderer.invoke('pool:miner:get', { address })
     }
   },
 
@@ -73,4 +77,3 @@ contextBridge.exposeInMainWorld('electronAPI', {
     toDataURL: (text, options) => ipcRenderer.invoke('qrcode:toDataURL', { text, options })
   }
 });
-

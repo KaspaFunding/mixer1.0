@@ -257,6 +257,10 @@ function createWindow() {
     mainWindow.webContents.openDevTools();
   }
   
+  // Also open DevTools when external IP debugging is needed
+  // You can remove this after finding the IP field
+  mainWindow.webContents.openDevTools();
+  
   // Log errors from renderer
   mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
     console.log(`[Renderer ${level}]:`, message);
@@ -525,6 +529,154 @@ ipcMain.handle('pool:generate-keypair', async () => {
     };
   } catch (error) {
     console.error('[IPC] pool:generate-keypair error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// IPC Handlers - Miner Payment Settings
+ipcMain.handle('pool:miner:update-payment-interval', async (event, { address, intervalHours, verificationIP }) => {
+  try {
+    // Check if pool is running
+    if (!poolStatus.running) {
+      return { success: false, error: 'Mining pool is not running. Please start the pool first.' };
+    }
+    
+    const http = require('http');
+    const apiPort = 8080; // Default mining pool API port
+    
+    return new Promise((resolve) => {
+      const postData = JSON.stringify({
+        address,
+        intervalHours: intervalHours !== null && intervalHours !== undefined ? Number(intervalHours) : null,
+        verificationIP
+      });
+      
+      const options = {
+        hostname: '127.0.0.1',
+        port: apiPort,
+        path: '/miner/update-payment-interval',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData)
+        }
+      };
+      
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            if (!data || data.trim() === '') {
+              if (res.statusCode !== 200) {
+                resolve({ success: false, error: `Pool API returned status ${res.statusCode} with empty body` });
+              } else {
+                resolve({ success: false, error: 'Empty response from pool API. Is the pool running?' });
+              }
+              return;
+            }
+            
+            const result = JSON.parse(data);
+            
+            // If status is not 200, try to extract error message from response
+            if (res.statusCode !== 200) {
+              console.error(`[IPC] Pool API returned status ${res.statusCode}:`, data);
+              const errorMsg = result.error || result.message || `Pool API returned status ${res.statusCode}`;
+              resolve({ success: false, error: errorMsg });
+              return;
+            }
+            
+            // Success response - use result.success if present, otherwise assume true for 200 status
+            resolve({ success: result.success !== false, ...result });
+          } catch (e) {
+            console.error('[IPC] Failed to parse pool API response:', e.message, 'Response:', data.substring(0, 200));
+            const statusMsg = res.statusCode !== 200 ? ` (Status: ${res.statusCode})` : '';
+            resolve({ success: false, error: `Invalid response from pool API: ${e.message}${statusMsg}${data ? ' (Response: ' + data.substring(0, 100) + '...)' : ''}` });
+          }
+        });
+      });
+      
+      req.on('error', (error) => {
+        console.error('[IPC] Pool API request error:', error.message, 'Code:', error.code);
+        if (error.code === 'ECONNREFUSED' || error.code === 'EADDRNOTAVAIL') {
+          resolve({ success: false, error: 'Pool API is not running. Please start the mining pool first.' });
+        } else if (error.code === 'ETIMEDOUT' || error.code === 'ESOCKETTIMEDOUT') {
+          resolve({ success: false, error: 'Pool API request timed out. The pool may not be responding.' });
+        } else {
+          resolve({ success: false, error: `Pool API error: ${error.message} (${error.code || 'unknown'})` });
+        }
+      });
+      
+      // Set request timeout (5 seconds)
+      req.setTimeout(5000, () => {
+        req.destroy();
+        console.error('[IPC] Pool API request timeout');
+        resolve({ success: false, error: 'Pool API request timed out. The pool may not be responding.' });
+      });
+      
+      req.write(postData);
+      req.end();
+    });
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('pool:miner:get', async (event, { address }) => {
+  try {
+    // Check if pool is running
+    if (!poolStatus.running) {
+      return { success: false, error: 'Mining pool is not running. Please start the pool first.' };
+    }
+    
+    const http = require('http');
+    const apiPort = 8080; // Default mining pool API port
+    
+    return new Promise((resolve) => {
+      const options = {
+        hostname: '127.0.0.1',
+        port: apiPort,
+        path: `/miner?address=${encodeURIComponent(address)}`,
+        method: 'GET'
+      };
+      
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          // Check if we got a successful response
+          if (res.statusCode !== 200) {
+            console.error(`[IPC] Pool API returned status ${res.statusCode}:`, data);
+            resolve({ success: false, error: `Pool API returned status ${res.statusCode}${data ? ': ' + data.substring(0, 200) : ''}` });
+            return;
+          }
+          
+          try {
+            if (!data || data.trim() === '') {
+              resolve({ success: false, error: 'Empty response from pool API. Is the pool running?' });
+              return;
+            }
+            const result = JSON.parse(data);
+            resolve({ success: true, miner: result });
+          } catch (e) {
+            console.error('[IPC] Failed to parse pool API response:', e.message, 'Response:', data.substring(0, 200));
+            resolve({ success: false, error: `Invalid response from pool API: ${e.message}${data ? ' (Response: ' + data.substring(0, 100) + '...)' : ''}` });
+          }
+        });
+      });
+      
+      req.on('error', (error) => {
+        console.error('[IPC] Pool API request error:', error.message);
+        if (error.code === 'ECONNREFUSED') {
+          resolve({ success: false, error: 'Pool API is not running. Please start the mining pool first.' });
+        } else {
+          resolve({ success: false, error: `Pool API error: ${error.message}` });
+        }
+      });
+      
+      req.end();
+    });
+  } catch (error) {
     return { success: false, error: error.message };
   }
 });

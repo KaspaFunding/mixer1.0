@@ -82,14 +82,44 @@ export default class Rewarding {
       const miner = this.database.getMiner(address)
       const newBalance = share.plus(miner.balance.toString())
 
+      // Get payment interval early so we can use it for both checks and updates
+      const paymentIntervalHours = miner.paymentIntervalHours
+
+      let shouldPay = false
+
+      // Check threshold-based payout
       if (newBalance.gt(this.paymentThreshold)) {
+        shouldPay = true
+      }
+
+      // Check time-based payout
+      if (paymentIntervalHours && paymentIntervalHours > 0 && newBalance.gt(0)) {
+        const lastPayoutTime = this.database.getLastPayoutTime(address)
+        const now = Date.now()
+        const intervalMs = paymentIntervalHours * 60 * 60 * 1000
+
+        // If never paid before, or interval has passed, trigger payout
+        if (!lastPayoutTime || (now - lastPayoutTime) >= intervalMs) {
+          shouldPay = true
+        }
+      }
+
+      if (shouldPay) {
+        // Deduct the full balance before payment
         this.database.addBalance(address, -miner.balance)
+
+        // Update last payout time if time-based payouts are configured
+        // This resets the timer regardless of whether payout was triggered by threshold or time
+        if (paymentIntervalHours && paymentIntervalHours > 0) {
+          this.database.setLastPayoutTime(address, Date.now())
+        }
 
         payments.push({
           address,
           amount: BigInt(newBalance.toFixed(0))
         })
       } else {
+        // Just add the share to the balance
         this.database.addBalance(address, BigInt(share.toFixed(0)))
       }
     }

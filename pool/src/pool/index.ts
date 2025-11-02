@@ -47,6 +47,18 @@ export default class Pool {
 
     const contributorCount = this.rewarding.recordContributions(hash, contributions)
 
+    // Record block found for the miner who found it
+    this.database.incrementBlockCount(contribution.address)
+
+    // Store block details
+    this.database.addBlock({
+      hash,
+      address: contribution.address,
+      timestamp: Date.now(),
+      difficulty: contribution.difficulty.toString(),
+      paid: false
+    })
+
     this.monitoring.log(`Block ${hash} has been successfully submitted to the network, ${contributorCount} contributor(s) recorded for rewards distribution.`)
   }
 
@@ -58,8 +70,21 @@ export default class Pool {
 
       if (payments.length === 0) return this.monitoring.log(`No payments found for current distribution cycle.`)
       
-      const hash = await this.treasury.send(payments)
-      this.monitoring.log(`Reward threshold exceeded by miner(s), individual rewards sent: \n${hash.map(h => `           - ${h}`).join('\n')}`)
+      const txHashes = await this.treasury.send(payments)
+      
+      // Record payments in database
+      for (let i = 0; i < payments.length; i++) {
+        const payment = payments[i]
+        const txHash = txHashes[i] || txHashes[0] // Use first hash if array mismatch
+        this.database.addPayment({
+          hash: txHash,
+          address: payment.address,
+          amount: payment.amount.toString(),
+          timestamp: Date.now()
+        })
+      }
+      
+      this.monitoring.log(`Reward threshold exceeded by miner(s), individual rewards sent: \n${txHashes.map(h => `           - ${h}`).join('\n')}`)
     })
   }
 }

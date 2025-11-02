@@ -1535,7 +1535,18 @@ async function updateNodeStatusIndicator(status) {
     }
   }
   
+  // Store status data
   nodeStatusData = status;
+}
+
+// Helper function to get current node mode
+async function getCurrentNodeMode() {
+  try {
+    const result = await electronAPI.node.getMode();
+    return result.success ? result.mode : 'private';
+  } catch {
+    return 'private';
+  }
 }
 
 function updatePortBadges(portInfo, nodeConnected) {
@@ -1915,7 +1926,9 @@ electronAPI.node.status().then(result => {
   if (result.success) {
     updateNodeStatusIndicator({
       status: result.status.connected ? 'connected' : 'disconnected',
-      ...result.status
+      connected: result.status.connected,
+      synced: result.status.synced,
+      peerCount: result.status.peerCount
     });
   }
 });
@@ -1959,10 +1972,17 @@ async function refreshPoolStatus() {
         if (j) {
           const miners = Number(j.miners || 0);
           const workers = Number(j.workers || 0);
+          const blocksFound = Number(j.blocksFound || 0);
+          const poolHashrate = j.poolHashrateFormatted || '0 H/s';
+          
           document.getElementById('pool-miners').textContent = String(miners);
           document.getElementById('pool-workers').textContent = String(workers);
           document.getElementById('pool-network').textContent = j.networkId || '-';
           document.getElementById('pool-connections').textContent = String(miners);
+          const blocksEl = document.getElementById('pool-blocks-found');
+          if (blocksEl) blocksEl.textContent = String(blocksFound);
+          const hashrateEl = document.getElementById('pool-hashrate');
+          if (hashrateEl) hashrateEl.textContent = poolHashrate;
           
           // Refresh workers dashboard if pool is running
           if (s.running && miners > 0) {
@@ -1993,6 +2013,18 @@ const poolStopBtn = document.getElementById('pool-stop');
 const poolPortInput = document.getElementById('pool-port');
 const poolDiffInput = document.getElementById('pool-difficulty');
 const poolThreshKasInput = document.getElementById('pool-threshold-kas');
+
+// Payment interval UI elements
+const poolPaymentIntervalSelect = document.getElementById('pool-payment-interval');
+const poolPaymentIntervalCustom = document.getElementById('pool-payment-interval-custom');
+const poolMinerSettingsPanel = document.getElementById('pool-miner-settings');
+const poolToggleMinerSettingsBtn = document.getElementById('pool-toggle-miner-settings');
+const poolMinerAddressInput = document.getElementById('pool-miner-address');
+const poolVerificationIpInput = document.getElementById('pool-verification-ip');
+const poolSavePaymentIntervalBtn = document.getElementById('pool-save-payment-interval');
+const poolGetMinerInfoBtn = document.getElementById('pool-get-miner-info');
+const poolMinerInfoDisplay = document.getElementById('pool-miner-info-display');
+const poolMinerInfoContent = document.getElementById('pool-miner-info-content');
 
 // ASIC Difficulty Quick Select
 // Use event delegation since chips might be added dynamically or after page load
@@ -2118,6 +2150,214 @@ if (poolStopBtn) {
     // Update port badges after pool stops
     if (nodeStatusData) {
       setTimeout(() => updateNodeStatusIndicator(nodeStatusData), 600);
+    }
+  });
+}
+
+// Payment Interval UI Handlers
+if (poolPaymentIntervalSelect) {
+  poolPaymentIntervalSelect.addEventListener('change', () => {
+    if (poolPaymentIntervalCustom) {
+      if (poolPaymentIntervalSelect.value === 'custom') {
+        poolPaymentIntervalCustom.style.display = 'block';
+        poolPaymentIntervalCustom.focus();
+      } else {
+        poolPaymentIntervalCustom.style.display = 'none';
+        poolPaymentIntervalCustom.value = '';
+      }
+    }
+  });
+}
+
+if (poolToggleMinerSettingsBtn && poolMinerSettingsPanel) {
+  poolToggleMinerSettingsBtn.addEventListener('click', () => {
+    const isVisible = poolMinerSettingsPanel.style.display !== 'none';
+    poolMinerSettingsPanel.style.display = isVisible ? 'none' : 'block';
+    poolToggleMinerSettingsBtn.textContent = isVisible 
+      ? 'Configure Miner Payment Settings' 
+      : 'Hide Miner Payment Settings';
+  });
+}
+
+if (poolSavePaymentIntervalBtn) {
+  poolSavePaymentIntervalBtn.addEventListener('click', async () => {
+    const address = poolMinerAddressInput?.value?.trim();
+    const verificationIP = poolVerificationIpInput?.value?.trim();
+    
+    if (!address) {
+      showMessage('Please enter your miner address', 'error');
+      return;
+    }
+    
+    if (!verificationIP) {
+      showMessage('Please enter your verification IP address', 'error');
+      return;
+    }
+    
+    // Check if API is available
+    if (!electronAPI?.pool?.miner?.updatePaymentInterval) {
+      showMessage('Payment interval feature not available. Please restart the application.', 'error');
+      return;
+    }
+    
+    // Get interval value
+    let intervalHours = null;
+    if (poolPaymentIntervalSelect?.value) {
+      if (poolPaymentIntervalSelect.value === 'custom') {
+        const customValue = poolPaymentIntervalCustom?.value;
+        if (customValue) {
+          intervalHours = parseFloat(customValue);
+          if (isNaN(intervalHours) || intervalHours < 1 || intervalHours > 168) {
+            showMessage('Custom interval must be between 1 and 168 hours', 'error');
+            return;
+          }
+        } else {
+          showMessage('Please enter a custom interval value', 'error');
+          return;
+        }
+      } else {
+        intervalHours = parseFloat(poolPaymentIntervalSelect.value);
+      }
+    }
+    
+    poolSavePaymentIntervalBtn.disabled = true;
+    poolSavePaymentIntervalBtn.textContent = 'Saving...';
+    
+    try {
+      const result = await electronAPI.pool.miner.updatePaymentInterval(
+        address,
+        intervalHours,
+        verificationIP
+      );
+      
+      if (result.success) {
+        const message = intervalHours 
+          ? `Payment interval set to ${intervalHours} hour${intervalHours !== 1 ? 's' : ''}` 
+          : 'Time-based payouts disabled (threshold only)';
+        showMessage(message, 'success');
+        
+        // Refresh miner info display
+        if (poolGetMinerInfoBtn) {
+          poolGetMinerInfoBtn.click();
+        }
+      } else {
+        showMessage(result.error || 'Failed to update payment interval', 'error');
+      }
+    } catch (error) {
+      showMessage(`Error: ${error.message}`, 'error');
+    } finally {
+      poolSavePaymentIntervalBtn.disabled = false;
+      poolSavePaymentIntervalBtn.textContent = 'Save Payment Interval';
+    }
+  });
+}
+
+if (poolGetMinerInfoBtn) {
+  poolGetMinerInfoBtn.addEventListener('click', async () => {
+    const address = poolMinerAddressInput?.value?.trim();
+    
+    if (!address) {
+      showMessage('Please enter your miner address', 'error');
+      return;
+    }
+    
+    // Check if API is available
+    if (!electronAPI?.pool?.miner?.get) {
+      showMessage('Miner info feature not available. Please restart the application.', 'error');
+      return;
+    }
+    
+    poolGetMinerInfoBtn.disabled = true;
+    poolGetMinerInfoBtn.textContent = 'Loading...';
+    
+    try {
+      const result = await electronAPI.pool.miner.get(address);
+      
+      if (result.success && result.miner) {
+        const miner = result.miner;
+        const balanceKAS = (BigInt(miner.balance || '0') / 100000000n).toString();
+        const thresholdKAS = miner.paymentThreshold ? (BigInt(miner.paymentThreshold) / 100000000n).toString() : 'Not set';
+        const intervalHours = miner.paymentIntervalHours || null;
+        
+        // Format hashrate
+        function formatHashrate(h) {
+          if (!h || h === 0) return '0 H/s';
+          if (h < 1000) return `${h.toFixed(2)} H/s`;
+          if (h < 1000000) return `${(h / 1000).toFixed(2)} KH/s`;
+          if (h < 1000000000) return `${(h / 1000000).toFixed(2)} MH/s`;
+          const gh = h / 1000000000;
+          if (gh >= 1000) return `${(gh / 1000).toFixed(2)} TH/s`;
+          return `${gh.toFixed(2)} GH/s`;
+        }
+        
+        const hashrate = miner.hashrateFormatted || (miner.hashrate ? formatHashrate(miner.hashrate) : '0 H/s');
+        
+        let infoText = `Balance: ${balanceKAS} KAS\n`;
+        infoText += `Hashrate: ${hashrate}\n`;
+        infoText += `Blocks Found: ${miner.blocks || []} (${(miner.blocks || []).length} shown)\n`;
+        infoText += `Payments: ${(miner.payments || []).length} recent\n`;
+        infoText += `Payment Threshold: ${thresholdKAS} KAS\n`;
+        infoText += `Payment Interval: ${intervalHours ? `${intervalHours} hour${intervalHours !== 1 ? 's' : ''}` : 'Disabled'}\n`;
+        
+        if (miner.lastPayoutTime) {
+          const lastPayout = new Date(miner.lastPayoutTime);
+          infoText += `Last Payout: ${lastPayout.toLocaleString()}\n`;
+        } else {
+          infoText += `Last Payout: Never\n`;
+        }
+        
+        if (miner.nextPayoutTime && intervalHours) {
+          const nextPayout = new Date(miner.nextPayoutTime);
+          const now = Date.now();
+          const timeUntil = nextPayout - now;
+          if (timeUntil > 0) {
+            const hours = Math.floor(timeUntil / (1000 * 60 * 60));
+            const minutes = Math.floor((timeUntil % (1000 * 60 * 60)) / (1000 * 60));
+            infoText += `Next Payout: ${nextPayout.toLocaleString()} (in ${hours}h ${minutes}m)\n`;
+          } else {
+            infoText += `Next Payout: Due now\n`;
+          }
+        }
+        
+        if (poolMinerInfoContent) {
+          poolMinerInfoContent.textContent = infoText;
+        }
+        
+        if (poolMinerInfoDisplay) {
+          poolMinerInfoDisplay.style.display = 'block';
+        }
+        
+        // Update UI to match current settings
+        if (poolPaymentIntervalSelect) {
+          if (intervalHours) {
+            const intervalValue = intervalHours.toString();
+            if (poolPaymentIntervalSelect.querySelector(`option[value="${intervalValue}"]`)) {
+              poolPaymentIntervalSelect.value = intervalValue;
+              if (poolPaymentIntervalCustom) {
+                poolPaymentIntervalCustom.style.display = 'none';
+              }
+            } else {
+              poolPaymentIntervalSelect.value = 'custom';
+              if (poolPaymentIntervalCustom) {
+                poolPaymentIntervalCustom.style.display = 'block';
+                poolPaymentIntervalCustom.value = intervalHours;
+              }
+            }
+          } else {
+            poolPaymentIntervalSelect.value = '';
+            if (poolPaymentIntervalCustom) {
+              poolPaymentIntervalCustom.style.display = 'none';
+            }
+          }
+        }
+      } else {
+        showMessage(result.error || 'Failed to get miner info', 'error');
+      }
+    } catch (error) {
+      showMessage(`Error: ${error.message}`, 'error');
+    } finally {
+      poolGetMinerInfoBtn.disabled = false;
+      poolGetMinerInfoBtn.textContent = 'Get My Settings';
     }
   });
 }
@@ -2438,6 +2678,21 @@ async function refreshWorkersDashboard() {
       // Escape address for safe HTML
       const addressEscaped = miner.address.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
       
+      const blocksFound = miner.blocksFound || 0;
+      
+      // Format hashrate helper
+      function formatHashrate(h) {
+        if (!h || h === 0) return '0 H/s';
+        if (h < 1000) return `${h.toFixed(2)} H/s`;
+        if (h < 1000000) return `${(h / 1000).toFixed(2)} KH/s`;
+        if (h < 1000000000) return `${(h / 1000000).toFixed(2)} MH/s`;
+        const gh = h / 1000000000;
+        if (gh >= 1000) return `${(gh / 1000).toFixed(2)} TH/s`;
+        return `${gh.toFixed(2)} GH/s`;
+      }
+      
+      const hashrate = miner.hashrateFormatted || (miner.hashrate ? formatHashrate(miner.hashrate) : '0 H/s');
+      
       return `
         <div class="worker-card active" data-miner-address="${addressEscaped}" style="cursor: pointer;">
           <div class="worker-header">
@@ -2450,12 +2705,20 @@ async function refreshWorkersDashboard() {
               <span class="worker-detail-value">${balance} KAS</span>
             </div>
             <div class="worker-detail">
+              <span class="worker-detail-label">Hashrate:</span>
+              <span class="worker-detail-value">${hashrate}</span>
+            </div>
+            <div class="worker-detail">
               <span class="worker-detail-label">Workers:</span>
               <span class="worker-detail-value">${workersCount}</span>
             </div>
             <div class="worker-detail">
               <span class="worker-detail-label">Connections:</span>
               <span class="worker-detail-value">${miner.connections || 0}</span>
+            </div>
+            <div class="worker-detail">
+              <span class="worker-detail-label">Blocks Found:</span>
+              <span class="worker-detail-value">${blocksFound}</span>
             </div>
             ${workersDetail.length > 0 ? `
               <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-color);">
@@ -2634,6 +2897,7 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Load node mode on startup
   loadNodeMode();
+  
 });
 
 // Load node mode and update UI
@@ -2687,8 +2951,20 @@ async function toggleNodeMode() {
       if (result.restarted) {
         showMessage(`Node mode changed to ${newMode}. Node is restarting...`, 'info');
         // Update node status after restart
-        setTimeout(() => {
-          checkNodeStatus();
+        setTimeout(async () => {
+          try {
+            const statusResult = await electronAPI.node.status();
+            if (statusResult.success) {
+              updateNodeStatusIndicator({
+                status: statusResult.status.connected ? 'connected' : 'disconnected',
+                connected: statusResult.status.connected,
+                synced: statusResult.status.synced,
+                peerCount: statusResult.status.peerCount
+              });
+            }
+          } catch (err) {
+            console.error('Failed to refresh node status:', err);
+          }
         }, 5000);
       } else {
         showMessage(`Node mode set to ${newMode}. Restart node manually for changes to take effect.`, 'info');

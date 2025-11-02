@@ -47,7 +47,8 @@ export default class Templates {
   }
 
   async register (callback: (id: string, hash: string, timestamp: bigint, header: IRawHeader) => void) {
-    this.rpc.addEventListener('new-block-template', async () => {
+    // Define the template handler function
+    const handleNewTemplate = async () => {
       const { block } = await this.rpc.getBlockTemplate({
         payAddress: this.address,
         extraData: this.identity
@@ -65,8 +66,15 @@ export default class Templates {
       }
 
       callback(id, proofOfWork.prePoWHash, block.header.timestamp, block.header)
-    })
+    }
 
+    // Subscribe to future templates
+    this.rpc.addEventListener('new-block-template', handleNewTemplate)
+
+    // Subscribe to notifications and fetch initial template
     await this.rpc.subscribeNewBlockTemplate()
+    
+    // Fetch initial template immediately so we have at least one job when miners connect
+    await handleNewTemplate()
   }
 }

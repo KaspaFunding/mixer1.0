@@ -14,7 +14,7 @@
   "stratum": {
     "hostName": "0.0.0.0",
     "port": 7777,
-    "difficulty": "4096"
+    "difficulty": "1024"
   },
   "api": {
     "enabled": true,

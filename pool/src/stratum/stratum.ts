@@ -12,12 +12,21 @@ import { Decimal } from 'decimal.js'
 
 export type Contribution = { address: string, difficulty: Decimal }
 
+type ShareHistoryEntry = {
+  timestamp: number
+  difficulty: number | string
+  address: string
+}
+
 // @ts-ignore - EventEmitter is available at runtime in Bun
 export default class Stratum extends EventEmitter {
   private templates: Templates
   private contributions: Map<bigint, Contribution> = new Map() // TODO: Apply PPLNS maybe?
   subscriptors: Set<Socket<Miner>> = new Set()
   miners: Map<string, Set<Socket<Miner>>> = new Map()
+  private shareHistory: ShareHistoryEntry[] = []
+  private readonly shareHistoryWindowMs: number = 60 * 1000 // 1 minute window
+  private latestJob: { id: string, hash: string, timestamp: bigint } | null = null
 
   constructor (templates: Templates) {
     super()
@@ -26,7 +35,63 @@ export default class Stratum extends EventEmitter {
     this.templates.register((id, hash, timestamp, header) => this.announce(id, hash, timestamp, header))
   }
 
+  private recordShare(address: string, difficulty: number | string): void {
+    // Add to share history for hashrate calculation
+    this.shareHistory.push({ 
+      timestamp: Date.now(), 
+      difficulty, 
+      address 
+    })
+    
+    // Prune old shares to prevent memory growth
+    const now = Date.now()
+    this.shareHistory = this.shareHistory.filter(share => 
+      now - share.timestamp <= this.shareHistoryWindowMs * 2 // Keep 2x window for smoother calculation
+    )
+  }
+
+  getPoolHashrate(windowMs: number = this.shareHistoryWindowMs): number {
+    const now = Date.now()
+    const recentShares = this.shareHistory.filter(share => now - share.timestamp <= windowMs)
+    
+    if (recentShares.length === 0) return 0
+    
+    const totalDifficulty = recentShares.reduce((sum, share) => {
+      const difficulty = typeof share.difficulty === 'string' 
+        ? parseFloat(share.difficulty) 
+        : share.difficulty
+      return sum + difficulty
+    }, 0)
+    
+    // Convert difficulty to hashrate: 1 difficulty = 2^32 hashes
+    const hashes = totalDifficulty * Math.pow(2, 32)
+    return hashes / (windowMs / 1000) // H/s
+  }
+
+  getMinerHashrate(address: string, windowMs: number = this.shareHistoryWindowMs): number {
+    const now = Date.now()
+    const minerShares = this.shareHistory.filter(share => 
+      now - share.timestamp <= windowMs && 
+      share.address === address
+    )
+    
+    if (minerShares.length === 0) return 0
+    
+    const totalDifficulty = minerShares.reduce((sum, share) => {
+      const difficulty = typeof share.difficulty === 'string' 
+        ? parseFloat(share.difficulty) 
+        : share.difficulty
+      return sum + difficulty
+    }, 0)
+    
+    const hashes = totalDifficulty * Math.pow(2, 32)
+    return hashes / (windowMs / 1000) // H/s
+  }
+
   private announce (id: string, hash: string, timestamp: bigint, header: any) {
+    // Store latest job for sending to new subscribers
+    this.latestJob = { id, hash, timestamp }
+    
     // Create job for standard BigHeader encoding (most miners)
     // @ts-ignore - Buffer is available at runtime in Bun
     const timestampLE = Buffer.alloc(8)
@@ -85,6 +150,46 @@ export default class Stratum extends EventEmitter {
         this.subscriptors.delete(socket)
       }
     })
+  }
+
+  sendCurrentJobToSocket(socket: Socket<Miner>) {
+    // Send the latest job to a newly subscribed miner
+    if (!this.latestJob) {
+      console.warn(`[${new Date().toISOString()}] No job available to send to ${socket.remoteAddress}:${socket.remotePort} - latestJob is null`)
+      return // No job available yet
+    }
+    
+    // @ts-ignore - Buffer is available at runtime in Bun
+    const timestampLE = Buffer.alloc(8)
+    timestampLE.writeBigUInt64LE(this.latestJob.timestamp)
+    
+    const standardTask: Event<'mining.notify'> = {
+      method: 'mining.notify',
+      params: [ this.latestJob.id, this.latestJob.hash + timestampLE.toString('hex') ]
+    }
+    
+    const standardJob = JSON.stringify(standardTask) + '\n'
+    
+    // @ts-ignore - socket.readyState check
+    const readyState = socket.readyState
+    if (readyState === 1) {
+      try {
+        // Send appropriate job format based on encoding type
+        if (socket.data.encoding === Encoding.Bitmain) {
+          // Bitmain format uses serialized header as bigint array
+          // For now, send standard format as fallback
+          socket.write(standardJob)
+        } else {
+          // Standard EthereumStratum format (BigHeader)
+          socket.write(standardJob)
+        }
+        console.log(`[${new Date().toISOString()}] Sent current job to newly subscribed miner ${socket.remoteAddress}:${socket.remotePort} (job id: ${this.latestJob.id})`)
+      } catch (err) {
+        console.error(`Failed to send current job to ${socket.remoteAddress || 'unknown'}:`, err)
+      }
+    } else {
+      console.warn(`[${new Date().toISOString()}] Cannot send job to ${socket.remoteAddress}:${socket.remotePort} - socket readyState: ${readyState}`)
+    }
   }
 
   subscribe (socket: Socket<Miner>, agent: string) {
@@ -261,9 +366,13 @@ export default class Stratum extends EventEmitter {
 
     if (isBlock) {
       const block = await this.templates.submit(hash, nonce)
+      // Record share for hashrate (blocks are also shares)
+      this.recordShare(address, socket.data.difficulty.toNumber())
       // @ts-ignore - EventEmitter emit is available at runtime
       this.emit('block', block, { address, difficulty: socket.data.difficulty })
     } else {
+      // Record valid share for hashrate calculation
+      this.recordShare(address, socket.data.difficulty.toNumber())
       this.contributions.set(nonce, { address, difficulty: socket.data.difficulty })
     }
   }

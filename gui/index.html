@@ -474,7 +474,61 @@
                 <div class="form-group">
                   <label>Payment Threshold (KAS)</label>
                   <input type="number" id="pool-threshold-kas" value="10" min="0" step="0.00000001" />
+                  <div class="helper-text" style="margin-top:4px; font-size:0.85rem;">
+                    Payout when balance exceeds this threshold
+                  </div>
                 </div>
+                <div class="form-group" style="margin-top:1.5rem; padding-top:1.5rem; border-top:1px solid rgba(255,255,255,0.1);">
+                  <label>Payment Interval (Hours) <small class="helper-text" style="font-weight:400;">(Optional - Time-based payout)</small></label>
+                  <div style="display:flex; gap:8px; align-items:center;">
+                    <select id="pool-payment-interval" style="flex:1;">
+                      <option value="">Disabled (threshold only)</option>
+                      <option value="4">4 hours</option>
+                      <option value="6">6 hours</option>
+                      <option value="8">8 hours</option>
+                      <option value="12">12 hours</option>
+                      <option value="24">24 hours</option>
+                      <option value="48">48 hours</option>
+                      <option value="72">72 hours (3 days)</option>
+                      <option value="168">168 hours (7 days)</option>
+                      <option value="custom">Custom...</option>
+                    </select>
+                    <input type="number" id="pool-payment-interval-custom" value="" min="1" max="168" step="1" placeholder="Hours" style="flex:0 0 100px; display:none;" />
+                  </div>
+                  <div class="helper-text" style="margin-top:4px; font-size:0.85rem; line-height:1.4;">
+                    Payouts occur when <strong>either</strong> threshold is reached <strong>or</strong> time interval elapses (whichever comes first)
+                  </div>
+                </div>
+                <div class="form-group" id="pool-miner-settings" style="display:none; margin-top:1rem; padding:1rem; background:rgba(0,0,0,0.2); border-radius:8px; border:1px solid rgba(112,199,186,0.2);">
+                  <div style="margin-bottom:0.75rem;">
+                    <strong style="font-size:0.9rem;">Miner Payment Settings</strong>
+                    <div class="helper-text" style="font-size:0.85rem; margin-top:4px;">
+                      Configure payout settings for your miner address
+                    </div>
+                  </div>
+                  <div class="form-group" style="margin-bottom:0.75rem;">
+                    <label style="font-size:0.9rem;">Your Miner Address</label>
+                    <input type="text" id="pool-miner-address" placeholder="kaspa:..." style="font-family:ui-monospace,Menlo,Consolas,'Courier New',monospace; font-size:0.9rem;" />
+                  </div>
+                  <div class="form-group" style="margin-bottom:0.75rem;">
+                    <label style="font-size:0.9rem;">Verification IP (Your Public IP)</label>
+                    <input type="text" id="pool-verification-ip" placeholder="Your public IP address" style="font-family:ui-monospace,Menlo,Consolas,'Courier New',monospace; font-size:0.9rem;" />
+                    <div class="helper-text" style="font-size:0.8rem; margin-top:4px; line-height:1.4;">
+                      Your public IP address that the pool sees when you're mining. This must match the IP address your mining device uses to connect to the pool for security verification. You can find this by checking your router or using an online service like "what is my ip".
+                    </div>
+                  </div>
+                  <div style="display:flex; gap:8px;">
+                    <button id="pool-save-payment-interval" class="btn btn-primary" style="flex:1;">Save Payment Interval</button>
+                    <button id="pool-get-miner-info" class="btn btn-secondary" style="flex:1;">Get My Settings</button>
+                  </div>
+                  <div id="pool-miner-info-display" style="margin-top:1rem; padding:0.75rem; background:rgba(0,0,0,0.3); border-radius:6px; display:none;">
+                    <div style="font-size:0.9rem;">
+                      <div style="margin-bottom:0.5rem;"><strong>Current Settings:</strong></div>
+                      <div id="pool-miner-info-content" style="font-family:ui-monospace,Menlo,Consolas,'Courier New',monospace; font-size:0.85rem; line-height:1.6;"></div>
+                    </div>
+                  </div>
+                </div>
+                <button id="pool-toggle-miner-settings" class="btn btn-secondary" style="margin-top:1rem; width:100%;">Configure Miner Payment Settings</button>
                 <div class="form-group">
                   <label>Treasury Private Key <small id="pool-key-status" class="helper-text" style="font-weight:400;">(not configured)</small></label>
                   
@@ -561,6 +615,8 @@
                 <div class="detail-row"><span class="detail-label">Miners:</span><span id="pool-miners">0</span></div>
                 <div class="detail-row"><span class="detail-label">Workers:</span><span id="pool-workers">0</span></div>
                 <div class="detail-row"><span class="detail-label">Active Connections:</span><span id="pool-connections">0</span></div>
+                <div class="detail-row"><span class="detail-label">Pool Hashrate:</span><span id="pool-hashrate">0 H/s</span></div>
+                <div class="detail-row"><span class="detail-label">Blocks Found:</span><span id="pool-blocks-found">0</span></div>
               </div>
             </div>
             <div class="session-card collapsible-section">

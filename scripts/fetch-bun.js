@@ -196,14 +196,19 @@ async function main() {
         actualBunPath = foundPath;
         console.log(`Found Bun.exe at: ${actualBunPath}`);
         
-        // If it's not in the root of extractDir, move it there
+        // If it's not in the root of extractDir, copy it there (keep original too)
         if (actualBunPath !== BUN_EXE_PATH) {
           try {
+            // Ensure target directory exists
+            if (!fs.existsSync(BUN_EXTRACT_DIR)) {
+              fs.mkdirSync(BUN_EXTRACT_DIR, { recursive: true });
+            }
             fs.copyFileSync(actualBunPath, BUN_EXE_PATH);
             console.log(`✓ Copied Bun.exe to expected location: ${BUN_EXE_PATH}`);
             actualBunPath = BUN_EXE_PATH;
           } catch (copyErr) {
             console.warn('Could not copy to expected location, using found path:', copyErr.message);
+            // Use the found path - electron-builder can handle subdirectories
           }
         }
       }

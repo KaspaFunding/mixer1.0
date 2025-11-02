@@ -47,6 +47,9 @@
   "build": {
     "appId": "com.kaspa.mixer",
     "productName": "Kaspa Mixer",
+    "directories": {
+      "output": "dist"
+    },
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico"
@@ -59,7 +62,6 @@
       "assets/**/*",
       "pool/**/*",
       "package.json",
-      "bun/**/*",
       "node_modules/qrcode/**/*",
       "node_modules/pngjs/**/*",
       "node_modules/dijkstrajs/**/*",
@@ -77,9 +79,9 @@
         "filter": ["start-kaspad.bat"]
       },
       {
-        "from": "bun",
+        "from": "bun/bun.exe",
         "to": "bun",
-        "filter": ["**/*"]
+        "filter": ["bun.exe"]
       }
     ],
     "extraResources": [
@@ -95,9 +97,9 @@
         "filter": ["kaspad.exe"]
       },
       {
-        "from": "bun",
+        "from": "bun/bun.exe",
         "to": "bun",
-        "filter": ["**/*"]
+        "filter": ["bun.exe"]
       }
     ],
     "asarUnpack": [

@@ -59,6 +59,7 @@
       "assets/**/*",
       "pool/**/*",
       "package.json",
+      "bun/**/*",
       "node_modules/qrcode/**/*",
       "node_modules/pngjs/**/*",
       "node_modules/dijkstrajs/**/*"

@@ -62,7 +62,8 @@
       "bun/**/*",
       "node_modules/qrcode/**/*",
       "node_modules/pngjs/**/*",
-      "node_modules/dijkstrajs/**/*"
+      "node_modules/dijkstrajs/**/*",
+      "node_modules/decimal.js/**/*"
     ],
     "extraFiles": [
       {
@@ -100,9 +101,12 @@
       }
     ],
     "asarUnpack": [
+      "pool/**/*",
       "node_modules/qrcode/**/*",
       "node_modules/pngjs/**/*",
-      "node_modules/dijkstrajs/**/*"
+      "node_modules/dijkstrajs/**/*",
+      "node_modules/decimal.js/**/*",
+      "kaspa/**/*"
     ]
   }
 }

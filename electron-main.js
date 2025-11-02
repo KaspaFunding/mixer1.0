@@ -840,9 +840,50 @@ async function startPool(opts = {}) {
   
   const entry = path.join(cwd, 'index.ts');
   const args = ['run', entry];
+  
+  // Determine the app root directory (where node_modules would be)
+  let appRoot = __dirname;
+  if (app.isPackaged) {
+    // In packaged app, we're in resources/app.asar (unpacked) or resources/app
+    appRoot = path.resolve(__dirname, '..');
+  }
+  
+  // Ensure Bun can find node_modules (decimal.js, etc.)
+  // Also set paths for kaspa directory resolution
+  const nodeModulesPath = path.join(appRoot, 'node_modules');
+  const kaspaPath = path.join(appRoot, 'kaspa');
+  
+  // Verify critical dependencies exist
+  const decimalJsPath = path.join(nodeModulesPath, 'decimal.js');
+  if (!fs.existsSync(decimalJsPath) && !fs.existsSync(path.join(nodeModulesPath, 'decimal.js', 'package.json'))) {
+    console.warn(`[Pool] Warning: decimal.js not found at ${decimalJsPath}. Bun may still resolve it from asar or other locations.`);
+  }
+  
+  if (!fs.existsSync(path.join(kaspaPath, 'kaspa.js'))) {
+    console.warn(`[Pool] Warning: kaspa.js not found at ${path.join(kaspaPath, 'kaspa.js')}. Pool may fail to start.`);
+  }
+  
+  // Set environment variables to help Bun resolve modules
+  const env = {
+    ...process.env,
+    PORT: String(port),
+    NODE_PATH: nodeModulesPath, // Help Bun find node_modules if needed
+    // Bun uses its own resolver, but these hints can help
+  };
+  
   try {
     console.log(`[Pool] Starting pool with Bun: ${bun}`);
-    poolProcess = spawn(bun, args, { cwd, env: { ...process.env, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+    console.log(`[Pool] Pool directory (cwd): ${cwd}`);
+    console.log(`[Pool] App root: ${appRoot}`);
+    console.log(`[Pool] Node modules path: ${nodeModulesPath}`);
+    console.log(`[Pool] Kaspa path: ${kaspaPath}`);
+    console.log(`[Pool] Entry file: ${entry}`);
+    
+    poolProcess = spawn(bun, args, { 
+      cwd, 
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'] 
+    });
   } catch (e) {
     let errorMsg = `Failed to start pool: ${e.message}`;
     if (e.code === 'ENOENT') {

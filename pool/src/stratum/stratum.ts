@@ -365,11 +365,23 @@ export default class Stratum extends EventEmitter {
     }
 
     if (isBlock) {
-      const block = await this.templates.submit(hash, nonce)
-      // Record share for hashrate (blocks are also shares)
-      this.recordShare(address, socket.data.difficulty.toNumber())
-      // @ts-ignore - EventEmitter emit is available at runtime
-      this.emit('block', block, { address, difficulty: socket.data.difficulty })
+      try {
+        const block = await this.templates.submit(hash, nonce)
+        // Only emit block event if submission was successful
+        // Record share for hashrate (blocks are also shares)
+        this.recordShare(address, socket.data.difficulty.toNumber())
+        // @ts-ignore - EventEmitter emit is available at runtime
+        this.emit('block', block, { address, difficulty: socket.data.difficulty })
+      } catch (error) {
+        // Block submission failed (e.g., IBD, invalid block, route full)
+        // Don't emit block event - this block should not be counted
+        const errorMsg = error instanceof Error ? error.message : String(error)
+        console.warn(`[Stratum] Block submission failed for hash ${hash.substring(0, 16)}...: ${errorMsg}`)
+        // Still record as share for hashrate calculation, but not as a block
+        this.recordShare(address, socket.data.difficulty.toNumber())
+        // Use 'block-submission-failed' error code to properly indicate the issue
+        throw new StratumError('block-submission-failed')
+      }
     } else {
       // Record valid share for hashrate calculation
       this.recordShare(address, socket.data.difficulty.toNumber())

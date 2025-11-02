@@ -21,6 +21,7 @@ export enum ErrorCodes {
   "low-difficulty-share" = 23,
   "unauthorized-worker" = 24,
   "not-subscribed" = 25,
+  "block-submission-failed" = 26,
 }
 
 export class StratumError extends Error {

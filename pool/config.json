@@ -4,7 +4,7 @@
     "privateKey": "",
     "fee": 1,
     "rewarding": {
-      "paymentThreshold": "1000000000"
+      "paymentThreshold": "400000000"
     }
   },
   "templates": {

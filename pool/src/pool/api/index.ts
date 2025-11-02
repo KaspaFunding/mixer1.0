@@ -24,8 +24,9 @@ export default class Api extends Server {
   private treasury: Treasury
   private stratum: Stratum
   private database: Database
+  private pool: any // Reference to Pool instance for force payout
 
-  constructor (port: number, treasury: Treasury, stratum: Stratum, database: Database) {
+  constructor (port: number, treasury: Treasury, stratum: Stratum, database: Database, pool?: any) {
     super({
       '/status': () => this.status(),
       '/miners': () => this.getMiners(),
@@ -34,6 +35,9 @@ export default class Api extends Server {
       '/blocks/:address': ({ address, limit }) => this.getBlocksByAddress(address, limit ? parseInt(limit) : undefined),
       '/network-info': () => this.getNetworkInfo(),
       '/pool-stats': () => this.getPoolStats(),
+      '/payouts/force-all': {
+        post: async () => this.forcePayoutAll()
+      },
       '/miner/update-payment-interval': {
         post: async (body) => this.updatePaymentInterval(body.address, body.intervalHours, body.verificationIP)
       },
@@ -45,6 +49,7 @@ export default class Api extends Server {
     this.treasury = treasury
     this.stratum = stratum
     this.database = database
+    this.pool = pool
   }
 
   private status () {
@@ -345,6 +350,32 @@ export default class Api extends Server {
     } catch (error) {
       console.error('[API] Error updating payment interval:', error)
       return { success: false, error: 'Failed to update payment interval' }
+    }
+  }
+
+  private async forcePayoutAll() {
+    if (!this.pool) {
+      return { success: false, error: 'Pool instance not available' }
+    }
+
+    try {
+      const result = await this.pool.forcePayoutAll()
+      // Convert BigInt to string for JSON serialization
+      return {
+        ...result,
+        totalAmount: result.totalAmount.toString(),
+        totalAmountKAS: (result.totalAmount / 100000000n).toString()
+      }
+    } catch (error) {
+      console.error('[API] Error forcing payout all:', error)
+      return {
+        success: false,
+        paymentsCount: 0,
+        totalAmount: '0',
+        totalAmountKAS: '0',
+        txHashes: [],
+        error: error instanceof Error ? error.message : String(error)
+      }
     }
   }
 }

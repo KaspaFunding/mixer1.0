@@ -1,9 +1,10 @@
-import { version } from '../../../package.json'
 import { stylize, Code, getReadableDate, getReadableTime } from './styling'
 
 export default class Monitoring {
   constructor () {
-    console.log(`Kaspa Mining v${version}`)
+    // Use a constant version string instead of importing from package.json
+    // This avoids import path issues and is simpler for a logging utility
+    console.log(`Kaspa Mining v1.0.0`)
   }
 
   log (message: string) {

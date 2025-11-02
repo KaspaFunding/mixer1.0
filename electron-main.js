@@ -63,18 +63,53 @@ function getPoolConfigPath() {
 function ensureUserConfig() {
   const userCfgPath = getPoolConfigPath();
   try {
-    if (fs.existsSync(userCfgPath)) return userCfgPath;
+    if (fs.existsSync(userCfgPath)) {
+      // Config already exists - validate it in readPoolConfig instead
+      return userCfgPath;
+    }
+    
     const userDir = path.dirname(userCfgPath);
     fs.mkdirSync(userDir, { recursive: true });
-    // Source default from app resources
+    
+    // Source default from app resources, but ensure privateKey is always empty
     const defaultCfgPath = path.join(__dirname, 'pool', 'config.json');
     if (fs.existsSync(defaultCfgPath)) {
-      fs.copyFileSync(defaultCfgPath, userCfgPath);
+      // Read default config and ensure privateKey is empty
+      const defaultConfig = JSON.parse(fs.readFileSync(defaultCfgPath, 'utf-8'));
+      // SECURITY: Always ensure privateKey is empty in fresh installs
+      if (defaultConfig.treasury) {
+        defaultConfig.treasury.privateKey = '';
+      } else {
+        defaultConfig.treasury = { privateKey: '' };
+      }
+      fs.writeFileSync(userCfgPath, JSON.stringify(defaultConfig, null, 2), 'utf-8');
+      console.log('[Pool Config] Created user config with empty private key (secure default)');
     } else {
-      // Create minimal default
-      fs.writeFileSync(userCfgPath, JSON.stringify({}, null, 2));
+      // Create minimal default with empty private key
+      const safeDefault = {
+        treasury: {
+          privateKey: '', // SECURITY: Always empty on fresh install
+          fee: 1,
+          rewarding: {
+            paymentThreshold: '400000000'
+          }
+        },
+        stratum: {
+          hostName: '0.0.0.0',
+          port: 7777,
+          difficulty: '1024'
+        },
+        api: {
+          enabled: true,
+          port: 8080
+        }
+      };
+      fs.writeFileSync(userCfgPath, JSON.stringify(safeDefault, null, 2), 'utf-8');
+      console.log('[Pool Config] Created minimal user config with empty private key (secure default)');
     }
-  } catch (_) {}
+  } catch (err) {
+    console.error('[Pool Config] Error ensuring user config:', err.message);
+  }
   return userCfgPath;
 }
 function readPoolConfig() {
@@ -85,9 +120,16 @@ function readPoolConfig() {
     
     let configModified = false;
     
+    // SECURITY: Always ensure treasury.privateKey structure exists
+    if (!config.treasury) {
+      config.treasury = {};
+      configModified = true;
+    }
+    
     // Validate and clean treasury private key if present
-    if (config.treasury && config.treasury.privateKey) {
+    if (config.treasury.privateKey) {
       const key = String(config.treasury.privateKey).trim();
+      
       if (key) {
         // Validate the key format - must be hex string
         if (!/^[0-9a-fA-F]+$/.test(key)) {
@@ -104,8 +146,9 @@ function readPoolConfig() {
           try {
             const privateKey = new kaspa.PrivateKey(key);
             const keypair = kaspa.Keypair.fromPrivateKey(privateKey);
-            // Key is valid, keep it trimmed
-            config.treasury.privateKey = key;
+            // Key is valid, normalize to lowercase
+            config.treasury.privateKey = key.toLowerCase();
+            configModified = true;
           } catch (err) {
             console.warn(`[Pool Config] Invalid private key (secp256k1 validation failed): ${err.message}, clearing...`);
             config.treasury.privateKey = '';
@@ -113,8 +156,14 @@ function readPoolConfig() {
           }
         }
       } else {
+        // Empty key - ensure it's explicitly empty
         config.treasury.privateKey = '';
+        configModified = true;
       }
+    } else {
+      // Ensure treasury.privateKey exists and is empty if not set
+      config.treasury.privateKey = '';
+      configModified = true;
     }
     
     // Write back if we modified the config (cleared invalid key)
@@ -335,7 +384,7 @@ app.on('window-all-closed', () => {
 });
 
 // Mining Pool process controls
-function startPool(opts = {}) {
+async function startPool(opts = {}) {
   if (poolProcess && !poolProcess.killed && poolStatus.running) {
     return { started: false, message: 'Pool already running', pid: poolProcess.pid };
   }
@@ -378,7 +427,200 @@ function startPool(opts = {}) {
   const port = Number(opts.port || 7777);
   const cwd = path.join(__dirname, 'pool');
   const bunCmd = process.platform === 'win32' ? 'bun.exe' : 'bun';
-  const bun = bunCmd; // assume in PATH; otherwise user should install Bun
+  
+  // Try to find bun executable
+  let bun = bunCmd;
+  let bunFound = false;
+  
+  // Helper function to check if bun exists at a path
+  const checkBunPath = (bunPath) => {
+    try {
+      if (process.platform === 'win32') {
+        // On Windows, try to execute bun --version
+        const { execSync } = require('child_process');
+        execSync(`"${bunPath}" --version`, { stdio: 'ignore', timeout: 5000 });
+        return true;
+      } else {
+        // On Unix, check if file exists and is executable
+        return fs.existsSync(bunPath) && fs.statSync(bunPath).isFile();
+      }
+    } catch (e) {
+      return false;
+    }
+  };
+  
+  // First, try to find bun in PATH or common locations
+  try {
+    const { execSync } = require('child_process');
+    if (process.platform === 'win32') {
+      try {
+        // On Windows, use 'where' command
+        execSync(`where ${bunCmd}`, { stdio: 'ignore' });
+        bun = bunCmd; // Found in PATH
+        bunFound = checkBunPath(bun);
+        if (bunFound) {
+          console.log(`[Pool] Found Bun in PATH`);
+        }
+      } catch (e) {
+        // Not in PATH, check common installation locations
+        const commonPaths = [
+          path.join(process.env.USERPROFILE || '', 'AppData', 'Local', 'bun', 'bun.exe'),
+          path.join(process.env.USERPROFILE || '', '.bun', 'bin', 'bun.exe'),
+          path.join('C:', 'Program Files', 'bun', 'bun.exe'),
+          path.join('C:', 'Program Files (x86)', 'bun', 'bun.exe'),
+        ];
+        
+        for (const bunPath of commonPaths) {
+          if (checkBunPath(bunPath)) {
+            bun = bunPath;
+            bunFound = true;
+            console.log(`[Pool] Found Bun at: ${bun}`);
+            break;
+          }
+        }
+      }
+    } else {
+      // Unix-like systems: try 'which' command
+      try {
+        execSync(`which ${bunCmd}`, { stdio: 'ignore' });
+        bun = bunCmd;
+        bunFound = checkBunPath(bun);
+        if (bunFound) {
+          console.log(`[Pool] Found Bun in PATH`);
+        }
+      } catch (e) {
+        // Check common Unix locations
+        const commonPaths = [
+          path.join(process.env.HOME || '', '.bun', 'bin', 'bun'),
+          '/usr/local/bin/bun',
+          '/opt/bun/bin/bun',
+        ];
+        
+        for (const bunPath of commonPaths) {
+          if (checkBunPath(bunPath)) {
+            bun = bunPath;
+            bunFound = true;
+            console.log(`[Pool] Found Bun at: ${bun}`);
+            break;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Pool] Could not verify Bun installation:', err.message);
+  }
+  
+  // If Bun not found, attempt automatic installation
+  if (!bunFound) {
+    console.log('[Pool] Bun not found, attempting automatic installation...');
+    try {
+      const { execSync, spawn } = require('child_process');
+      
+      if (process.platform === 'win32') {
+        // Windows: Use PowerShell to install Bun
+        console.log('[Pool] Installing Bun via PowerShell...');
+        try {
+          // Run the installation script
+          execSync('powershell -NoProfile -ExecutionPolicy Bypass -Command "irm bun.sh/install.ps1 | iex"', {
+            stdio: 'inherit',
+            timeout: 120000, // 2 minute timeout
+            shell: true
+          });
+          
+          // After installation, refresh PATH and check again
+          // Bun typically installs to %USERPROFILE%\.bun\bin\bun.exe
+          const installedPaths = [
+            path.join(process.env.USERPROFILE || '', '.bun', 'bin', 'bun.exe'),
+            path.join(process.env.USERPROFILE || '', 'AppData', 'Local', 'bun', 'bun.exe'),
+          ];
+          
+          // Wait a moment for installation to complete
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          for (const bunPath of installedPaths) {
+            if (checkBunPath(bunPath)) {
+              bun = bunPath;
+              bunFound = true;
+              console.log(`[Pool] Bun installed successfully at: ${bun}`);
+              break;
+            }
+          }
+          
+          // Also try PATH again (Bun installer may add it)
+          if (!bunFound) {
+            try {
+              execSync(`where ${bunCmd}`, { stdio: 'ignore' });
+              bun = bunCmd;
+              bunFound = checkBunPath(bun);
+              if (bunFound) {
+                console.log(`[Pool] Bun found in PATH after installation`);
+              }
+            } catch (e) {
+              // Still not found
+            }
+          }
+          
+          if (!bunFound) {
+            return {
+              started: false,
+              error: `Bun installation attempted but not found afterward. Please restart the application or manually install Bun from https://bun.sh/install`
+            };
+          }
+        } catch (installErr) {
+          console.error('[Pool] Bun installation failed:', installErr.message);
+          return {
+            started: false,
+            error: `Failed to automatically install Bun: ${installErr.message}\n\nPlease install Bun manually:\n  powershell -c "irm bun.sh/install.ps1 | iex"`
+          };
+        }
+      } else {
+        // Unix-like: Use curl to install Bun
+        console.log('[Pool] Installing Bun via curl...');
+        try {
+          execSync('curl -fsSL https://bun.sh/install | bash', {
+            stdio: 'inherit',
+            timeout: 120000, // 2 minute timeout
+            shell: true,
+            env: { ...process.env, PATH: process.env.PATH }
+          });
+          
+          // After installation, check common location
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          const installedPath = path.join(process.env.HOME || '', '.bun', 'bin', 'bun');
+          if (checkBunPath(installedPath)) {
+            bun = installedPath;
+            bunFound = true;
+            console.log(`[Pool] Bun installed successfully at: ${bun}`);
+          } else {
+            // Try PATH again
+            try {
+              execSync(`which ${bunCmd}`, { stdio: 'ignore' });
+              bun = bunCmd;
+              bunFound = checkBunPath(bun);
+            } catch (e) {
+              return {
+                started: false,
+                error: `Bun installation attempted but not found afterward. Please restart your terminal or run: source ~/.bashrc`
+              };
+            }
+          }
+        } catch (installErr) {
+          console.error('[Pool] Bun installation failed:', installErr.message);
+          return {
+            started: false,
+            error: `Failed to automatically install Bun: ${installErr.message}\n\nPlease install Bun manually:\n  curl -fsSL https://bun.sh/install | bash`
+          };
+        }
+      }
+    } catch (err) {
+      console.error('[Pool] Error during Bun installation:', err.message);
+      return {
+        started: false,
+        error: `Bun runtime not found and automatic installation failed. Please install Bun manually from https://bun.sh/install`
+      };
+    }
+  }
   
   // Persist desired config before start
   try {
@@ -417,9 +659,22 @@ function startPool(opts = {}) {
   const entry = path.join(cwd, 'index.ts');
   const args = ['run', entry];
   try {
+    // Verify bun exists before trying to spawn
+    if (!fs.existsSync(bun) && bun === bunCmd) {
+      // bun is not a full path and wasn't found in PATH
+      return {
+        started: false,
+        error: `Bun runtime not found. Please install Bun from https://bun.sh/install or ensure '${bunCmd}' is in your system PATH.\n\nWindows Installation: Open PowerShell and run:\n  powershell -c "irm bun.sh/install.ps1 | iex"\n\nAfter installation, restart this application.`
+      };
+    }
+    
     poolProcess = spawn(bun, args, { cwd, env: { ...process.env, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
-    return { started: false, error: `Failed to start pool: ${e.message}` };
+    let errorMsg = `Failed to start pool: ${e.message}`;
+    if (e.code === 'ENOENT') {
+      errorMsg = `Bun runtime not found at "${bun}". Please install Bun from https://bun.sh/install\n\nWindows: Open PowerShell and run:\n  powershell -c "irm bun.sh/install.ps1 | iex"`;
+    }
+    return { started: false, error: errorMsg };
   }
   poolStatus = { running: true, pid: poolProcess.pid, port, output: '', exited: false, exitCode: null };
   poolProcess.stdout.on('data', (d) => {
@@ -465,7 +720,7 @@ function stopPool() {
 
 ipcMain.handle('pool:start', async (event, opts) => {
   try {
-    const res = startPool(opts || { port: 7777 });
+    const res = await startPool(opts || { port: 7777 });
     return { success: !res.error, ...res };
   } catch (e) {
     return { success: false, error: e.message };
@@ -529,6 +784,86 @@ ipcMain.handle('pool:generate-keypair', async () => {
     };
   } catch (error) {
     console.error('[IPC] pool:generate-keypair error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('pool:force-payout-all', async () => {
+  try {
+    // Check if pool is running
+    if (!poolStatus.running) {
+      return { success: false, error: 'Mining pool is not running. Please start the pool first.' };
+    }
+    
+    const http = require('http');
+    const apiPort = 8080; // Default mining pool API port
+    
+    return new Promise((resolve) => {
+      const options = {
+        hostname: '127.0.0.1',
+        port: apiPort,
+        path: '/payouts/force-all',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      };
+      
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            if (!data || data.trim() === '') {
+              if (res.statusCode !== 200) {
+                resolve({ success: false, error: `Pool API returned status ${res.statusCode} with empty body` });
+              } else {
+                resolve({ success: false, error: 'Empty response from pool API. Is the pool running?' });
+              }
+              return;
+            }
+            
+            const result = JSON.parse(data);
+            
+            // If status is not 200, try to extract error message from response
+            if (res.statusCode !== 200) {
+              console.error(`[IPC] Pool API returned status ${res.statusCode}:`, data);
+              const errorMsg = result.error || result.message || `Pool API returned status ${res.statusCode}`;
+              resolve({ success: false, error: errorMsg });
+              return;
+            }
+            
+            // Success response
+            resolve({ success: result.success !== false, ...result });
+          } catch (e) {
+            console.error('[IPC] Failed to parse pool API response:', e.message, 'Response:', data.substring(0, 200));
+            const statusMsg = res.statusCode !== 200 ? ` (Status: ${res.statusCode})` : '';
+            resolve({ success: false, error: `Invalid response from pool API: ${e.message}${statusMsg}${data ? ' (Response: ' + data.substring(0, 100) + '...)' : ''}` });
+          }
+        });
+      });
+      
+      req.on('error', (error) => {
+        console.error('[IPC] Pool API request error:', error.message, 'Code:', error.code);
+        if (error.code === 'ECONNREFUSED' || error.code === 'EADDRNOTAVAIL') {
+          resolve({ success: false, error: 'Pool API is not running. Please start the mining pool first.' });
+        } else if (error.code === 'ETIMEDOUT' || error.code === 'ESOCKETTIMEDOUT') {
+          resolve({ success: false, error: 'Pool API request timed out. The pool may not be responding.' });
+        } else {
+          resolve({ success: false, error: `Pool API error: ${error.message} (${error.code || 'unknown'})` });
+        }
+      });
+      
+      // Set request timeout (30 seconds for force payout - may take longer)
+      req.setTimeout(30000, () => {
+        req.destroy();
+        console.error('[IPC] Pool API request timeout');
+        resolve({ success: false, error: 'Pool API request timed out. The pool may not be responding.' });
+      });
+      
+      req.end();
+    });
+  } catch (error) {
     return { success: false, error: error.message };
   }
 });

@@ -80,7 +80,10 @@ export default class Rewarding {
     for (const [ address, work ] of contributors) {
       const share = work.div(accumulatedWork).mul(amount.toString())
       const miner = this.database.getMiner(address)
+      const oldBalance = miner.balance.toString()
       const newBalance = share.plus(miner.balance.toString())
+      const shareSompi = BigInt(share.toFixed(0))
+      const shareKAS = (Number(shareSompi) / 100000000).toFixed(8)
 
       // Get payment interval early so we can use it for both checks and updates
       const paymentIntervalHours = miner.paymentIntervalHours
@@ -118,9 +121,12 @@ export default class Rewarding {
           address,
           amount: BigInt(newBalance.toFixed(0))
         })
+        console.log(`[DISTRIBUTE] Added payout for ${address}: ${(Number(newBalance.toFixed(0)) / 100000000).toFixed(8)} KAS (old: ${(Number(oldBalance) / 100000000).toFixed(8)} KAS, share: ${shareKAS} KAS)`)
       } else {
         // Just add the share to the balance
-        this.database.addBalance(address, BigInt(share.toFixed(0)))
+        this.database.addBalance(address, shareSompi)
+        const addressWithPrefix = address.startsWith('kaspa:') ? address : `kaspa:${address}`
+        console.log(`[DISTRIBUTE] Added ${shareKAS} KAS to ${addressWithPrefix} balance (old: ${(Number(oldBalance) / 100000000).toFixed(8)} KAS, new: ${(Number(newBalance.toFixed(0)) / 100000000).toFixed(8)} KAS)`)
       }
     }
 

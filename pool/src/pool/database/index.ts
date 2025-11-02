@@ -210,6 +210,28 @@ export default class Database {
     return total
   }
 
+  getAllMiners(): Map<string, Miner> {
+    const miners = new Map<string, Miner>()
+    if (this.useLmdb && this.miners) {
+      // @ts-ignore
+      this.miners.getKeys().forEach((key: string) => {
+        if (key !== 'me') { // Exclude pool's own balance
+          const miner = this.getMiner(key)
+          miners.set(key, miner)
+        }
+      })
+    } else {
+      const data = JSON.parse(fs.readFileSync(this.jsonPath, 'utf-8') || '{}')
+      for (const address in data) {
+        if (address !== 'me') { // Exclude pool's own balance
+          const miner = this.getMiner(address)
+          miners.set(address, miner)
+        }
+      }
+    }
+    return miners
+  }
+
   addBlock(block: Block) {
     if (this.useLmdb && this.blocks) {
       // @ts-ignore

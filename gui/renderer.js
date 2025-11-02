@@ -2010,6 +2010,7 @@ async function refreshPoolStatus() {
 
 const poolStartBtn = document.getElementById('pool-start');
 const poolStopBtn = document.getElementById('pool-stop');
+const poolForcePayoutBtn = document.getElementById('pool-force-payout');
 const poolPortInput = document.getElementById('pool-port');
 const poolDiffInput = document.getElementById('pool-difficulty');
 const poolThreshKasInput = document.getElementById('pool-threshold-kas');
@@ -2150,6 +2151,70 @@ if (poolStopBtn) {
     // Update port badges after pool stops
     if (nodeStatusData) {
       setTimeout(() => updateNodeStatusIndicator(nodeStatusData), 600);
+    }
+  });
+}
+
+// Force Payout All Miners
+if (poolForcePayoutBtn) {
+  poolForcePayoutBtn.addEventListener('click', async () => {
+    // Confirm action
+    if (!confirm('Force payout will send all pending balances to all miners (ignoring thresholds). Continue?')) {
+      return;
+    }
+
+    poolForcePayoutBtn.disabled = true;
+    poolForcePayoutBtn.textContent = 'Processing...';
+
+    try {
+      if (!electronAPI?.pool?.forcePayoutAll) {
+        showMessage('Force payout feature not available. Please restart the application.', 'error');
+        return;
+      }
+
+      const result = await electronAPI.pool.forcePayoutAll();
+      
+      if (result.success) {
+        if (result.paymentsCount === 0) {
+          showMessage('No miners with pending balance to payout', 'info');
+        } else {
+          const totalKAS = result.totalAmountKAS || (BigInt(result.totalAmount || '0') / 100000000n).toString();
+          
+          // Build message with transaction hashes
+          let message = `Force payout successful: ${result.paymentsCount} payment(s) sent totaling ${totalKAS} KAS`;
+          
+          if (result.txHashes && result.txHashes.length > 0) {
+            message += `\n\nTransaction hashes:`;
+            result.txHashes.forEach((txHash, idx) => {
+              message += `\n${idx + 1}. ${txHash}`;
+            });
+            message += `\n\nVerify on explorer: https://kas.fyi/tx/${result.txHashes[0]}`;
+          }
+          
+          showMessage(message, 'success');
+          
+          // Also log to console for easy copy-paste
+          if (result.txHashes && result.txHashes.length > 0) {
+            console.log('[Force Payout] Transaction hashes:', result.txHashes);
+            result.txHashes.forEach((txHash, idx) => {
+              console.log(`  ${idx + 1}. https://kas.fyi/tx/${txHash}`);
+            });
+          }
+          
+          // Refresh pool status to show updated balances
+          setTimeout(() => {
+            refreshPoolStatus();
+            refreshWorkersDashboard();
+          }, 1000);
+        }
+      } else {
+        showMessage(result.error || 'Failed to force payout', 'error');
+      }
+    } catch (error) {
+      showMessage(`Error: ${error.message}`, 'error');
+    } finally {
+      poolForcePayoutBtn.disabled = false;
+      poolForcePayoutBtn.textContent = 'Force Payout All Miners';
     }
   });
 }

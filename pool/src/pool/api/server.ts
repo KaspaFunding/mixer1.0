@@ -145,21 +145,28 @@ export default class Server {
           })
         }
 
-        // Parse request body
-        let body
-        try {
-          body = await request.json()
-        } catch (parseErr) {
-          return Response.json({ error: 'Invalid JSON in request body', success: false }, { 
-            status: 400,
-            headers: {
-              'Access-Control-Allow-Origin': '*',
-              'Content-Type': 'application/json'
+            // Parse request body (if present)
+            let body = {}
+            try {
+              // Try to read request body as text first
+              const text = await request.text()
+              if (text && text.trim().length > 0) {
+                // Parse JSON if we have content
+                body = JSON.parse(text)
+              }
+              // Empty body is fine - use empty object (already set)
+            } catch (parseErr) {
+              // If JSON parse fails, return error
+              return Response.json({ error: 'Invalid JSON in request body', success: false }, { 
+                status: 400,
+                headers: {
+                  'Access-Control-Allow-Origin': '*',
+                  'Content-Type': 'application/json'
+                }
+              })
             }
-          })
-        }
 
-        const result = await handler(body)
+            const result = await handler(body)
 
         // Ensure result has success field if it doesn't already
         const response = typeof result === 'object' && result !== null && 'success' in result 

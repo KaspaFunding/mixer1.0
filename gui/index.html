@@ -595,9 +595,12 @@
                   <span class="detail-label">Status:</span>
                   <span id="pool-status-text">Stopped</span>
                 </div>
-                <div style="display:flex; gap:8px;">
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
                   <button id="pool-start" class="btn btn-primary">Start</button>
                   <button id="pool-stop" class="btn btn-danger">Stop</button>
+                </div>
+                <div style="margin-top:0.5rem;">
+                  <button id="pool-force-payout" class="btn btn-secondary" style="width:100%;" title="Force payout to all miners with balance > 0 (ignores thresholds)">Force Payout All Miners</button>
                 </div>
               </div>
             </div>

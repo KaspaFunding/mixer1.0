@@ -29,13 +29,19 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 
 // Status message helper
-function showMessage(text, type = 'info') {
+function showMessage(text, type = 'info', duration = 5000) {
   const msg = document.getElementById('status-message');
-  msg.textContent = text;
+  // Support both plain text and HTML content
+  if (text.includes('<') && text.includes('>')) {
+    msg.innerHTML = text;
+  } else {
+    msg.textContent = text;
+  }
   msg.className = `status-message ${type}`;
+  msg.classList.remove('hidden');
   setTimeout(() => {
     msg.classList.add('hidden');
-  }, 5000);
+  }, duration);
 }
 
 // HTML escape helper
@@ -2111,12 +2117,40 @@ if (poolStartBtn) {
     const difficulty = String(poolDiffInput.value || '1');
     const kas = Number(poolThreshKasInput.value || 0);
     const paymentThresholdSompi = Math.max(0, Math.round(kas * 1e8));
-    await electronAPI.pool.config.update({ port, difficulty, paymentThresholdSompi });
-    const res = await electronAPI.pool.start({ port, difficulty, paymentThresholdSompi });
-    if (res.success && res.started) {
-      showMessage(`Pool started on :${res.port}`, 'success');
-    } else {
-      showMessage(res.error || res.message || 'Failed to start pool', 'error');
+    
+    poolStartBtn.disabled = true;
+    poolStartBtn.textContent = 'Starting...';
+    
+    try {
+      await electronAPI.pool.config.update({ port, difficulty, paymentThresholdSompi });
+      const res = await electronAPI.pool.start({ port, difficulty, paymentThresholdSompi });
+      
+      if (res.success && res.started) {
+        showMessage(`Pool started on :${res.port}`, 'success');
+      } else {
+        // Check if this is a Bun installation error
+        const errorMsg = res.error || res.message || 'Failed to start pool';
+        
+        if (errorMsg.includes('Bun') || errorMsg.includes('bun')) {
+          // Format Bun installation error more user-friendly
+          const bunErrorMsg = errorMsg.replace(/\n/g, '<br>') + 
+            '<br><br><strong>Installation Steps:</strong><br>' +
+            '1. Open PowerShell as Administrator<br>' +
+            '2. Run: <code>powershell -c "irm bun.sh/install.ps1 | iex"</code><br>' +
+            '3. Restart this application<br><br>' +
+            '<a href="https://bun.sh/install" target="_blank">Or download Bun directly</a>';
+          
+          // Show error in a more prominent way for Bun issues
+          showMessage(bunErrorMsg, 'error', 15000); // Show for 15 seconds
+        } else {
+          showMessage(errorMsg, 'error');
+        }
+      }
+    } catch (error) {
+      showMessage(`Error starting pool: ${error.message}`, 'error');
+    } finally {
+      poolStartBtn.disabled = false;
+      poolStartBtn.textContent = 'Start';
     }
     setTimeout(refreshPoolStatus, 500);
     // start periodic polling

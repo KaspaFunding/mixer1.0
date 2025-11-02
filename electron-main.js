@@ -524,7 +524,10 @@ async function startPool(opts = {}) {
   
   // If Bun not found, attempt automatic installation
   if (!bunFound) {
-    console.log('[Pool] Bun not found, attempting automatic installation...');
+    const isPackaged = app.isPackaged;
+    console.log(`[Pool] Bun not found, attempting automatic installation... (packaged: ${isPackaged})`);
+    console.log('[Pool] This may take 30-60 seconds. Please wait...');
+    
     try {
       const { execSync, spawn } = require('child_process');
       
@@ -533,15 +536,29 @@ async function startPool(opts = {}) {
         console.log('[Pool] Installing Bun via PowerShell...');
         try {
           // Run the installation script
-          // Note: stdio: 'pipe' prevents blocking, but we can log output
+          // Note: In packaged apps, this might require user elevation or fail due to security policies
           console.log('[Pool] Executing Bun installer...');
-          const installOutput = execSync('powershell -NoProfile -ExecutionPolicy Bypass -Command "irm bun.sh/install.ps1 | iex"', {
-            stdio: 'pipe',
+          
+          // Try with different approaches for packaged vs dev
+          let installCommand = 'powershell -NoProfile -ExecutionPolicy Bypass -Command "irm bun.sh/install.ps1 | iex"';
+          
+          // In packaged apps, we might need to handle this differently
+          if (isPackaged) {
+            // For packaged apps, try running in a way that might work better
+            installCommand = 'powershell -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command "irm bun.sh/install.ps1 | iex"';
+          }
+          
+          const installOutput = execSync(installCommand, {
+            stdio: isPackaged ? 'pipe' : 'pipe', // Always pipe to avoid issues in packaged apps
             timeout: 120000, // 2 minute timeout
             shell: true,
             encoding: 'utf8'
           });
-          console.log('[Pool] Bun installation completed');
+          
+          if (installOutput && installOutput.trim()) {
+            console.log('[Pool] Installation output:', installOutput.substring(0, 200));
+          }
+          console.log('[Pool] Bun installation command completed');
           
           // After installation, refresh PATH and check again
           // Bun typically installs to %USERPROFILE%\.bun\bin\bun.exe
@@ -601,16 +618,38 @@ async function startPool(opts = {}) {
           }
           
           if (!bunFound) {
+            const errorMsg = isPackaged 
+              ? `Bun installation attempted but not found afterward.\n\n` +
+                `For packaged applications, automatic installation may be blocked by security policies.\n\n` +
+                `Please install Bun manually:\n` +
+                `1. Open PowerShell as Administrator\n` +
+                `2. Run: powershell -c "irm bun.sh/install.ps1 | iex"\n` +
+                `3. Restart this application\n\n` +
+                `Alternatively, download Bun from: https://bun.sh/install`
+              : `Bun installation attempted but not found afterward. Please restart the application or manually install Bun from https://bun.sh/install`;
+            
             return {
               started: false,
-              error: `Bun installation attempted but not found afterward. Please restart the application or manually install Bun from https://bun.sh/install`
+              error: errorMsg
             };
           }
         } catch (installErr) {
           console.error('[Pool] Bun installation failed:', installErr.message);
+          const errorMsg = isPackaged
+            ? `Failed to automatically install Bun (packaged app).\n\n` +
+              `Automatic installation may be blocked in packaged applications.\n\n` +
+              `Please install Bun manually:\n` +
+              `1. Open PowerShell as Administrator\n` +
+              `2. Run: powershell -c "irm bun.sh/install.ps1 | iex"\n` +
+              `3. Restart this application\n\n` +
+              `Error: ${installErr.message}\n\n` +
+              `Download Bun from: https://bun.sh/install`
+            : `Failed to automatically install Bun: ${installErr.message}\n\n` +
+              `Please install Bun manually:\n  powershell -c "irm bun.sh/install.ps1 | iex"`;
+          
           return {
             started: false,
-            error: `Failed to automatically install Bun: ${installErr.message}\n\nPlease install Bun manually:\n  powershell -c "irm bun.sh/install.ps1 | iex"`
+            error: errorMsg
           };
         }
       } else {
@@ -655,9 +694,20 @@ async function startPool(opts = {}) {
       }
     } catch (err) {
       console.error('[Pool] Error during Bun installation:', err.message);
+      const errorMsg = app.isPackaged
+        ? `Bun runtime not found and automatic installation failed.\n\n` +
+          `For fresh installs on packaged applications, Bun must be installed manually:\n\n` +
+          `Windows Installation:\n` +
+          `1. Open PowerShell as Administrator (Right-click → Run as Administrator)\n` +
+          `2. Run: powershell -c "irm bun.sh/install.ps1 | iex"\n` +
+          `3. Restart this application\n\n` +
+          `Or download from: https://bun.sh/install\n\n` +
+          `Error: ${err.message}`
+        : `Bun runtime not found and automatic installation failed. Please install Bun manually from https://bun.sh/install\n\nError: ${err.message}`;
+      
       return {
         started: false,
-        error: `Bun runtime not found and automatic installation failed. Please install Bun manually from https://bun.sh/install`
+        error: errorMsg
       };
     }
   }

@@ -436,7 +436,11 @@ async function startPool(opts = {}) {
   const checkBunPath = (bunPath) => {
     try {
       if (process.platform === 'win32') {
-        // On Windows, try to execute bun --version
+        // First check if file exists
+        if (!fs.existsSync(bunPath)) {
+          return false;
+        }
+        // Try to execute bun --version to verify it works
         const { execSync } = require('child_process');
         execSync(`"${bunPath}" --version`, { stdio: 'ignore', timeout: 5000 });
         return true;
@@ -454,12 +458,20 @@ async function startPool(opts = {}) {
     const { execSync } = require('child_process');
     if (process.platform === 'win32') {
       try {
-        // On Windows, use 'where' command
-        execSync(`where ${bunCmd}`, { stdio: 'ignore' });
-        bun = bunCmd; // Found in PATH
-        bunFound = checkBunPath(bun);
-        if (bunFound) {
-          console.log(`[Pool] Found Bun in PATH`);
+        // On Windows, use 'where' command to find bun in PATH
+        const whereOutput = execSync(`where ${bunCmd}`, { stdio: 'pipe', encoding: 'utf8', timeout: 5000 }).trim();
+        if (whereOutput) {
+          const bunPathFromWhere = whereOutput.split('\n')[0].trim();
+          if (bunPathFromWhere && checkBunPath(bunPathFromWhere)) {
+            bun = bunPathFromWhere;
+            bunFound = true;
+            console.log(`[Pool] Found Bun in PATH at: ${bun}`);
+          } else if (checkBunPath(bunCmd)) {
+            // Try using just the command name
+            bun = bunCmd;
+            bunFound = true;
+            console.log(`[Pool] Found Bun in PATH`);
+          }
         }
       } catch (e) {
         // Not in PATH, check common installation locations
@@ -521,11 +533,15 @@ async function startPool(opts = {}) {
         console.log('[Pool] Installing Bun via PowerShell...');
         try {
           // Run the installation script
-          execSync('powershell -NoProfile -ExecutionPolicy Bypass -Command "irm bun.sh/install.ps1 | iex"', {
-            stdio: 'inherit',
+          // Note: stdio: 'pipe' prevents blocking, but we can log output
+          console.log('[Pool] Executing Bun installer...');
+          const installOutput = execSync('powershell -NoProfile -ExecutionPolicy Bypass -Command "irm bun.sh/install.ps1 | iex"', {
+            stdio: 'pipe',
             timeout: 120000, // 2 minute timeout
-            shell: true
+            shell: true,
+            encoding: 'utf8'
           });
+          console.log('[Pool] Bun installation completed');
           
           // After installation, refresh PATH and check again
           // Bun typically installs to %USERPROFILE%\.bun\bin\bun.exe
@@ -534,29 +550,53 @@ async function startPool(opts = {}) {
             path.join(process.env.USERPROFILE || '', 'AppData', 'Local', 'bun', 'bun.exe'),
           ];
           
-          // Wait a moment for installation to complete
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          // Wait for installation to complete and files to be written
+          console.log('[Pool] Waiting for installation to complete...');
+          await new Promise(resolve => setTimeout(resolve, 5000)); // Give it time to download and install
           
-          for (const bunPath of installedPaths) {
-            if (checkBunPath(bunPath)) {
-              bun = bunPath;
-              bunFound = true;
-              console.log(`[Pool] Bun installed successfully at: ${bun}`);
-              break;
+          // Try multiple times to find Bun (it might take a moment for files to be written)
+          console.log('[Pool] Checking for installed Bun...');
+          let foundAfterInstall = false;
+          for (let attempt = 0; attempt < 5; attempt++) {
+            if (attempt > 0) {
+              console.log(`[Pool] Retry ${attempt + 1}/5: Checking for Bun...`);
+              await new Promise(resolve => setTimeout(resolve, 2000));
             }
-          }
-          
-          // Also try PATH again (Bun installer may add it)
-          if (!bunFound) {
+            
+            for (const bunPath of installedPaths) {
+              console.log(`[Pool] Checking: ${bunPath}`);
+              if (checkBunPath(bunPath)) {
+                bun = bunPath;
+                bunFound = true;
+                foundAfterInstall = true;
+                console.log(`[Pool] ✓ Bun installed successfully at: ${bun}`);
+                break;
+              }
+            }
+            
+            if (foundAfterInstall) break;
+            
+            // Also try PATH again (Bun installer may add it)
             try {
-              execSync(`where ${bunCmd}`, { stdio: 'ignore' });
-              bun = bunCmd;
-              bunFound = checkBunPath(bun);
-              if (bunFound) {
-                console.log(`[Pool] Bun found in PATH after installation`);
+              const whereOutput = execSync(`where ${bunCmd}`, { stdio: 'pipe', encoding: 'utf8', timeout: 5000 }).trim();
+              if (whereOutput) {
+                const bunPathFromWhere = whereOutput.split('\n')[0].trim();
+                if (bunPathFromWhere && checkBunPath(bunPathFromWhere)) {
+                  bun = bunPathFromWhere;
+                  bunFound = true;
+                  foundAfterInstall = true;
+                  console.log(`[Pool] ✓ Bun found in PATH after installation: ${bun}`);
+                  break;
+                } else if (checkBunPath(bunCmd)) {
+                  bun = bunCmd;
+                  bunFound = true;
+                  foundAfterInstall = true;
+                  console.log(`[Pool] ✓ Bun found in PATH after installation`);
+                  break;
+                }
               }
             } catch (e) {
-              // Still not found
+              // Still not found, continue to next attempt
             }
           }
           
@@ -656,23 +696,36 @@ async function startPool(opts = {}) {
     return { started: false, error: `Failed to write pool config: ${err.message}` };
   }
   
+  // Final verification that we have a valid Bun executable
+  if (!bunFound) {
+    return {
+      started: false,
+      error: `Bun runtime not found and automatic installation was not successful. Please install Bun manually from https://bun.sh/install\n\nWindows: Open PowerShell and run:\n  powershell -c "irm bun.sh/install.ps1 | iex"`
+    };
+  }
+  
+  // Verify bun is executable (for full paths)
+  if (bun !== bunCmd && !fs.existsSync(bun)) {
+    console.warn(`[Pool] Bun path ${bun} does not exist, trying from PATH...`);
+    bun = bunCmd;
+    bunFound = checkBunPath(bun);
+    if (!bunFound) {
+      return {
+        started: false,
+        error: `Bun executable not found at expected location. Please restart the application after installing Bun.`
+      };
+    }
+  }
+  
   const entry = path.join(cwd, 'index.ts');
   const args = ['run', entry];
   try {
-    // Verify bun exists before trying to spawn
-    if (!fs.existsSync(bun) && bun === bunCmd) {
-      // bun is not a full path and wasn't found in PATH
-      return {
-        started: false,
-        error: `Bun runtime not found. Please install Bun from https://bun.sh/install or ensure '${bunCmd}' is in your system PATH.\n\nWindows Installation: Open PowerShell and run:\n  powershell -c "irm bun.sh/install.ps1 | iex"\n\nAfter installation, restart this application.`
-      };
-    }
-    
+    console.log(`[Pool] Starting pool with Bun: ${bun}`);
     poolProcess = spawn(bun, args, { cwd, env: { ...process.env, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
     let errorMsg = `Failed to start pool: ${e.message}`;
     if (e.code === 'ENOENT') {
-      errorMsg = `Bun runtime not found at "${bun}". Please install Bun from https://bun.sh/install\n\nWindows: Open PowerShell and run:\n  powershell -c "irm bun.sh/install.ps1 | iex"`;
+      errorMsg = `Bun runtime not found at "${bun}". Automatic installation may have failed. Please install Bun manually from https://bun.sh/install\n\nWindows: Open PowerShell and run:\n  powershell -c "irm bun.sh/install.ps1 | iex"`;
     }
     return { started: false, error: errorMsg };
   }

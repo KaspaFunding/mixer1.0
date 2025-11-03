@@ -22,18 +22,9 @@ declare namespace Bun {
   }): TCPSocketListener<any>
 }
 
-declare const Bun: typeof Bun
-declare const Buffer: typeof Buffer
-
 // Node.js types available in Bun
-declare module 'events' {
-  export class EventEmitter {
-    on(event: string, listener: (...args: any[]) => void): this
-    emit(event: string, ...args: any[]): boolean
-    addEventListener(event: string, listener: (...args: any[]) => void): this
-    removeEventListener(event: string, listener: (...args: any[]) => void): this
-  }
-}
+// Note: EventEmitter is provided by @types/node, so we don't redeclare it here
+// If you see errors, ensure @types/node is installed or use @ts-ignore comments where needed
 
 declare module 'crypto' {
   export function randomBytes(size: number): Buffer

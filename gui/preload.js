@@ -65,6 +65,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     miner: {
       updatePaymentInterval: (address, intervalHours, verificationIP) => ipcRenderer.invoke('pool:miner:update-payment-interval', { address, intervalHours, verificationIP }),
       get: (address) => ipcRenderer.invoke('pool:miner:get', { address })
+    },
+    onBlockFound: (callback) => {
+      ipcRenderer.on('pool:block-found', (event, data) => callback(data));
     }
   },
 

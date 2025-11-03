@@ -46,27 +46,56 @@ export default class Pool {
     console.log(`[Treasury] Pool earnings updated: old=${(Number(oldBalance) / 100000000).toFixed(8)} KAS, added=${amountKAS} KAS, new=${balanceKAS} KAS`)
   }
 
-  private record (hash: string, contribution: Contribution) {
+  private async record (hash: string, contribution: Contribution) {
     const contributions = this.stratum.dump()
     contributions.push(contribution)
 
     const contributorCount = this.rewarding.recordContributions(hash, contributions)
 
-    // Record block found for the miner who found it
-    this.database.incrementBlockCount(contribution.address)
+    // Verify block is actually in the chain before recording
+    try {
+      const blockInfo = await this.treasury.processor.rpc.getBlock({ hash, includeTransactions: false }).catch(() => null)
+      
+      if (!blockInfo?.block) {
+        // Block not found in chain - might be orphaned/rejected
+        const addressWithPrefix = contribution.address.startsWith('kaspa:') ? contribution.address : `kaspa:${contribution.address}`
+        this.monitoring.log(`⚠️ Block ${hash.substring(0, 16)}... submitted but not found in chain (may be orphaned/rejected)`)
+        return // Don't record orphaned blocks
+      }
+      
+      // Use the hash from the block header (ensures we use the canonical hash from the node)
+      const confirmedHash = blockInfo.block.header.hash || hash
+      
+      // Block confirmed in chain - record it
+      this.database.incrementBlockCount(contribution.address)
+      
+      // Store block details with confirmed hash
+      this.database.addBlock({
+        hash: confirmedHash,
+        address: contribution.address,
+        timestamp: Date.now(),
+        difficulty: contribution.difficulty.toString(),
+        paid: false
+      })
 
-    // Store block details
-    this.database.addBlock({
-      hash,
-      address: contribution.address,
-      timestamp: Date.now(),
-      difficulty: contribution.difficulty.toString(),
-      paid: false
-    })
-
-    const addressWithPrefix = contribution.address.startsWith('kaspa:') ? contribution.address : `kaspa:${contribution.address}`
-    this.monitoring.log(`Block ${hash.substring(0, 16)}... found by ${addressWithPrefix}, ${contributorCount} contributor(s) recorded for rewards distribution.`)
-    this.monitoring.log(`Rewards will mature in ~200 DAA blocks (~33 minutes) and then be distributed to miners.`)
+      const addressWithPrefix = contribution.address.startsWith('kaspa:') ? contribution.address : `kaspa:${contribution.address}`
+      this.monitoring.log(`✓ Block ${confirmedHash.substring(0, 16)}... found by ${addressWithPrefix} and confirmed in chain, ${contributorCount} contributor(s) recorded for rewards distribution.`)
+      this.monitoring.log(`Rewards will mature in ~200 DAA blocks (~33 minutes) and then be distributed to miners.`)
+    } catch (err) {
+      // If verification fails, still record it but warn
+      const addressWithPrefix = contribution.address.startsWith('kaspa:') ? contribution.address : `kaspa:${contribution.address}`
+      this.monitoring.log(`⚠️ Could not verify block ${hash.substring(0, 16)}... in chain: ${err instanceof Error ? err.message : String(err)}`)
+      this.monitoring.log(`Recording block anyway - verify manually in explorer`)
+      
+      this.database.incrementBlockCount(contribution.address)
+      this.database.addBlock({
+        hash,
+        address: contribution.address,
+        timestamp: Date.now(),
+        difficulty: contribution.difficulty.toString(),
+        paid: false
+      })
+    }
   }
 
   private async distribute (amount: bigint) {
@@ -91,10 +120,12 @@ export default class Pool {
         const payment = payments[i]
         const txHash = txHashStrings[i] || txHashStrings[0] // Use first hash if array mismatch
         // Ensure address is string (IPaymentOutput.address may be string | Address)
+        // Address may have kaspa: prefix - remove it for storage (addresses stored without prefix)
         const addressStr = typeof payment.address === 'string' ? payment.address : payment.address.toString()
+        const addressForStorage = addressStr.replace(/^(kaspa:?|kaspatest:?)/i, '')
         this.database.addPayment({
           hash: txHash,
-          address: addressStr,
+          address: addressForStorage,
           amount: payment.amount.toString(),
           timestamp: Date.now()
         })
@@ -119,8 +150,10 @@ export default class Pool {
         this.monitoring.log(`  Miner: ${addressWithPrefix}, Balance: ${balanceKAS} KAS (${miner.balance.toString()} sompi)`)
         
         if (miner.balance > 0n) {
+          // Ensure address has kaspa: prefix for payment (required by Kaspa SDK)
+          const addressForPayment = address.startsWith('kaspa:') ? address : `kaspa:${address}`
           payments.push({
-            address,
+            address: addressForPayment,
             amount: miner.balance
           })
         }
@@ -190,19 +223,22 @@ export default class Pool {
           continue
         }
         
+        // Address may have kaspa: prefix - remove it for storage (addresses stored without prefix)
+        const addressForStorage = payment.address.replace(/^(kaspa:?|kaspatest:?)/i, '')
+        
         // Record payment
         this.database.addPayment({
           hash: txHash,
-          address: payment.address,
+          address: addressForStorage,
           amount: payment.amount.toString(),
           timestamp: Date.now()
         })
 
-        // Deduct balance and update last payout time
-        this.database.addBalance(payment.address, -payment.amount)
-        const miner = this.database.getMiner(payment.address)
+        // Deduct balance and update last payout time (use address without prefix for database lookup)
+        this.database.addBalance(addressForStorage, -payment.amount)
+        const miner = this.database.getMiner(addressForStorage)
         if (miner.paymentIntervalHours && miner.paymentIntervalHours > 0) {
-          this.database.setLastPayoutTime(payment.address, Date.now())
+          this.database.setLastPayoutTime(addressForStorage, Date.now())
         }
         
         // Log successful payment

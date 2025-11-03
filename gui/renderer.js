@@ -2021,6 +2021,22 @@ const poolPortInput = document.getElementById('pool-port');
 const poolDiffInput = document.getElementById('pool-difficulty');
 const poolThreshKasInput = document.getElementById('pool-threshold-kas');
 
+// Vardiff UI elements
+const vardiffEnabledCheckbox = document.getElementById('pool-vardiff-enabled');
+const vardiffSettingsPanel = document.getElementById('vardiff-settings');
+const vardiffTargetTimeInput = document.getElementById('vardiff-target-time');
+const vardiffMinDiffInput = document.getElementById('vardiff-min-difficulty');
+const vardiffMaxDiffInput = document.getElementById('vardiff-max-difficulty');
+const vardiffMaxChangeInput = document.getElementById('vardiff-max-change');
+const vardiffChangeIntervalInput = document.getElementById('vardiff-change-interval');
+
+// Toggle vardiff settings panel visibility
+if (vardiffEnabledCheckbox && vardiffSettingsPanel) {
+  vardiffEnabledCheckbox.addEventListener('change', (e) => {
+    vardiffSettingsPanel.style.display = e.target.checked ? 'block' : 'none';
+  });
+}
+
 // Payment interval UI elements
 const poolPaymentIntervalSelect = document.getElementById('pool-payment-interval');
 const poolPaymentIntervalCustom = document.getElementById('pool-payment-interval-custom');
@@ -2080,6 +2096,22 @@ async function loadPoolConfig() {
       const sompi = Number(cfg.treasury.rewarding.paymentThreshold);
       if (!Number.isNaN(sompi)) poolThreshKasInput.value = (sompi / 1e8).toFixed(8);
     }
+    
+    // Load vardiff settings
+    if (cfg.stratum?.vardiff) {
+      const vardiff = cfg.stratum.vardiff;
+      if (vardiffEnabledCheckbox) {
+        vardiffEnabledCheckbox.checked = vardiff.enabled === true;
+        if (vardiffSettingsPanel) {
+          vardiffSettingsPanel.style.display = vardiff.enabled ? 'block' : 'none';
+        }
+      }
+      if (vardiffTargetTimeInput && vardiff.targetTime) vardiffTargetTimeInput.value = vardiff.targetTime;
+      if (vardiffMinDiffInput && vardiff.minDifficulty) vardiffMinDiffInput.value = vardiff.minDifficulty;
+      if (vardiffMaxDiffInput && vardiff.maxDifficulty) vardiffMaxDiffInput.value = vardiff.maxDifficulty;
+      if (vardiffMaxChangeInput && vardiff.maxChange) vardiffMaxChangeInput.value = vardiff.maxChange;
+      if (vardiffChangeIntervalInput && vardiff.changeInterval) vardiffChangeIntervalInput.value = vardiff.changeInterval;
+    }
     if (cfg.treasury?.privateKey && poolKeyStatus) {
       poolKeyStatus.textContent = '(configured)';
       poolKeyStatus.style.color = '#0f5132';
@@ -2118,11 +2150,22 @@ if (poolStartBtn) {
     const kas = Number(poolThreshKasInput.value || 0);
     const paymentThresholdSompi = Math.max(0, Math.round(kas * 1e8));
     
+    // Collect vardiff settings
+    const vardiff = {
+      enabled: vardiffEnabledCheckbox?.checked === true,
+      targetTime: vardiffTargetTimeInput ? Number(vardiffTargetTimeInput.value || 30) : 30,
+      minDifficulty: vardiffMinDiffInput ? Number(vardiffMinDiffInput.value || 64) : 64,
+      maxDifficulty: vardiffMaxDiffInput ? Number(vardiffMaxDiffInput.value || 65536) : 65536,
+      maxChange: vardiffMaxChangeInput ? Number(vardiffMaxChangeInput.value || 2.0) : 2.0,
+      changeInterval: vardiffChangeIntervalInput ? Number(vardiffChangeIntervalInput.value || 30) : 30,
+      variancePercent: 50 // Fixed value (can be made configurable later if needed)
+    };
+    
     poolStartBtn.disabled = true;
     poolStartBtn.textContent = 'Starting...';
     
     try {
-      await electronAPI.pool.config.update({ port, difficulty, paymentThresholdSompi });
+      await electronAPI.pool.config.update({ port, difficulty, paymentThresholdSompi, vardiff });
       const res = await electronAPI.pool.start({ port, difficulty, paymentThresholdSompi });
       
       if (res.success && res.started) {
@@ -2934,6 +2977,106 @@ if (refreshWorkersBtn) {
 document.addEventListener('DOMContentLoaded', () => {
   loadPoolConfig().catch(() => {});
 });
+
+// Block Found Notification System
+let blockNotificationQueue = [];
+let activeBlockNotification = null;
+
+function showBlockNotification(blockData) {
+  const container = document.getElementById('block-notification-container');
+  if (!container) return;
+  
+  // Create notification popup
+  const notification = document.createElement('div');
+  notification.className = 'block-notification';
+  notification.dataset.timestamp = blockData.timestamp;
+  
+  const hashShort = blockData.hash.substring(0, 16) + '...';
+  const addressDisplay = blockData.address.startsWith('kaspa:') ? blockData.address : `kaspa:${blockData.address}`;
+  
+  notification.innerHTML = `
+    <div class="block-notification-content">
+      <div class="block-notification-header">
+        <div class="block-notification-title">
+          <span class="block-icon">⛏️</span>
+          <span>Block Found!</span>
+        </div>
+        <button class="block-notification-close" onclick="this.closest('.block-notification').remove(); if(window.activeBlockNotification === this.closest('.block-notification')) window.activeBlockNotification = null; processBlockNotificationQueue();">&times;</button>
+      </div>
+      <div class="block-notification-body">
+        <div class="block-info-row">
+          <span class="block-info-label">Hash:</span>
+          <span class="block-info-value block-hash" title="${blockData.hash}">${hashShort}</span>
+        </div>
+        <div class="block-info-row">
+          <span class="block-info-label">Miner:</span>
+          <span class="block-info-value" title="${addressDisplay}">${addressDisplay.substring(0, 20)}${addressDisplay.length > 20 ? '...' : ''}</span>
+        </div>
+        <div class="block-info-row">
+          <span class="block-info-label">Difficulty:</span>
+          <span class="block-info-value">${blockData.difficulty}</span>
+        </div>
+        <div class="block-notification-actions">
+          <a href="${blockData.explorerUrl}" target="_blank" class="btn btn-primary" style="margin-top: 0.75rem; padding: 0.5rem 1rem; font-size: 0.875rem;">
+            View on Explorer
+          </a>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  container.appendChild(notification);
+  
+  // Animate in
+  setTimeout(() => {
+    notification.classList.add('show');
+  }, 10);
+  
+  // Set as active
+  activeBlockNotification = notification;
+  
+  // Auto-remove after 15 seconds if not manually closed
+  setTimeout(() => {
+    if (notification.parentNode) {
+      notification.classList.remove('show');
+      setTimeout(() => {
+        if (notification.parentNode) {
+          notification.remove();
+          if (activeBlockNotification === notification) {
+            activeBlockNotification = null;
+          }
+          processBlockNotificationQueue();
+        }
+      }, 300);
+    }
+  }, 15000);
+}
+
+function processBlockNotificationQueue() {
+  // If there's an active notification, wait
+  if (activeBlockNotification && activeBlockNotification.parentNode) {
+    return;
+  }
+  
+  // Show next notification in queue
+  if (blockNotificationQueue.length > 0) {
+    const nextBlock = blockNotificationQueue.shift();
+    showBlockNotification(nextBlock);
+  }
+}
+
+// Listen for block found events
+if (electronAPI.pool && electronAPI.pool.onBlockFound) {
+  electronAPI.pool.onBlockFound((blockData) => {
+    // Add to queue
+    blockNotificationQueue.push(blockData);
+    processBlockNotificationQueue();
+  });
+}
+
+// Expose function for notification close button
+window.activeBlockNotification = null;
+window.processBlockNotificationQueue = processBlockNotificationQueue;
 
 // Collapsible Sections Handler
 document.addEventListener('DOMContentLoaded', () => {

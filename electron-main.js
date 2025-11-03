@@ -194,6 +194,18 @@ function writePoolConfig(partial) {
       next.stratum = next.stratum || {};
       next.stratum.difficulty = String(partial.difficulty);
     }
+    if (partial.vardiff) {
+      next.stratum = next.stratum || {};
+      next.stratum.vardiff = {
+        enabled: Boolean(partial.vardiff.enabled),
+        minDifficulty: Number(partial.vardiff.minDifficulty) || 64,
+        maxDifficulty: Number(partial.vardiff.maxDifficulty) || 65536,
+        targetTime: Number(partial.vardiff.targetTime) || 30,
+        variancePercent: Number(partial.vardiff.variancePercent) || 50,
+        maxChange: Number(partial.vardiff.maxChange) || 2.0,
+        changeInterval: Number(partial.vardiff.changeInterval) || 30
+      };
+    }
     if (partial.paymentThresholdSompi) {
       next.treasury = next.treasury || {};
       next.treasury.rewarding = next.treasury.rewarding || {};
@@ -1046,6 +1058,51 @@ async function startPool(opts = {}) {
     const msg = emphasizeIfImportant(cleaned);
     poolStatus.output = (poolStatus.output + msg).slice(-MAX_LOG_CHARS);
     console.log('[POOL]', cleaned.trim());
+    
+    // Detect block found messages and notify renderer
+    // Pattern: "✓ Block <hash>... found by <address> and confirmed in chain"
+    // The hash is typically 64 characters (32 bytes hex), but we show first 16 in log
+    const blockMatch = cleaned.match(/✓ Block ([a-f0-9]{16})\.\.\. found by (kaspa:)?([a-z0-9]+) and confirmed in chain/);
+    if (blockMatch) {
+      const hashPrefix = blockMatch[1];
+      const minerAddress = (blockMatch[2] || '') + blockMatch[3];
+      
+      // Try to extract difficulty from nearby log lines or context
+      let difficulty = 'Unknown';
+      const diffMatch = cleaned.match(/difficulty[:\s]+(\d+)/i);
+      if (diffMatch) {
+        difficulty = diffMatch[1];
+      }
+      
+      // We'll need to get the full hash - for now use prefix, but ideally we'd capture it
+      // Since we only have the prefix, we'll use it and let the user click to view full block
+      const fullHashPattern = hashPrefix + '[a-f0-9]{48}'; // Remaining 48 chars
+      
+      // Try to find full hash in recent output
+      let fullHash = hashPrefix;
+      const hashMatch = poolStatus.output.match(new RegExp(`(${hashPrefix}[a-f0-9]{48})`, 'i'));
+      if (hashMatch) {
+        fullHash = hashMatch[1];
+      } else {
+        // If we can't find full hash, use prefix (will need to search explorer)
+        fullHash = hashPrefix + '...';
+      }
+      
+      // Notify all renderer windows
+      const windows = BrowserWindow.getAllWindows();
+      windows.forEach(win => {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('pool:block-found', {
+            hash: fullHash.length === 64 ? fullHash : hashPrefix,
+            hashShort: hashPrefix,
+            address: minerAddress,
+            difficulty: difficulty,
+            timestamp: Date.now(),
+            explorerUrl: fullHash.length === 64 ? `https://kas.fyi/block/${fullHash}` : `https://kas.fyi/search?q=${hashPrefix}`
+          });
+        }
+      });
+    }
   });
   poolProcess.stderr.on('data', (d) => {
     const raw = d.toString();
@@ -1691,9 +1748,11 @@ ipcMain.handle('node:set-mode', async (event, { mode }) => {
       return { success: false, error: 'kaspad.exe not found' };
     }
     
-    // Generate batch file with full path to kaspad.exe
+    // Generate batch file with dynamic path resolution (never hardcode paths)
+    // Pass null or empty to force dynamic resolution in batch file
     const { generateBatContent } = require('./lib/node-starter');
-    const batContent = generateBatContent(mode === 'public', kaspadExePath);
+    // Don't pass hardcoded path - let batch file find it dynamically
+    const batContent = generateBatContent(mode === 'public', null);
     fs.writeFileSync(batPath, batContent, 'utf8');
     console.log(`[Node Mode] Created/updated start-kaspad.bat for ${mode} mode at ${batPath}`);
     

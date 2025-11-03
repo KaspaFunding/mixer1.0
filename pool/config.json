@@ -14,7 +14,16 @@
   "stratum": {
     "hostName": "0.0.0.0",
     "port": 7777,
-    "difficulty": "1024"
+    "difficulty": "4096",
+    "vardiff": {
+      "enabled": true,
+      "minDifficulty": 64,
+      "maxDifficulty": 65536,
+      "targetTime": 30,
+      "variancePercent": 50,
+      "maxChange": 2,
+      "changeInterval": 30
+    }
   },
   "api": {
     "enabled": true,

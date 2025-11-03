@@ -117,8 +117,10 @@ export default class Rewarding {
           this.database.setLastPayoutTime(address, Date.now())
         }
 
+        // Ensure address has kaspa: prefix for payment (required by Kaspa SDK)
+        const addressForPayment = address.startsWith('kaspa:') ? address : `kaspa:${address}`
         payments.push({
-          address,
+          address: addressForPayment,
           amount: BigInt(newBalance.toFixed(0))
         })
         console.log(`[DISTRIBUTE] Added payout for ${address}: ${(Number(newBalance.toFixed(0)) / 100000000).toFixed(8)} KAS (old: ${(Number(oldBalance) / 100000000).toFixed(8)} KAS, share: ${shareKAS} KAS)`)

@@ -16,7 +16,7 @@ if (!serverInfo.isSynced || !serverInfo.hasUtxoIndex) throw Error('Provided node
 
 const treasury = new Treasury(rpc, serverInfo.networkId, config.treasury.privateKey, config.treasury.fee)
 const templates = new Templates(rpc, treasury.address, config.templates.identity, config.templates.daaWindow)
-const stratum = new Stratum(templates, config.stratum.hostName, config.stratum.port, config.stratum.difficulty)
+const stratum = new Stratum(templates, config.stratum.hostName, config.stratum.port, config.stratum.difficulty, config.stratum.vardiff)
 const pool = new Pool(treasury, stratum, config.treasury.rewarding.paymentThreshold)
 
 if (config.api.enabled) pool.serveApi(config.api.port)

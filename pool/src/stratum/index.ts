@@ -35,6 +35,17 @@ export type Miner = {
   // Connection info stored for cleanup when socket is closed
   remoteAddress?: string
   remotePort?: string | number
+  // Pending notifications and job flags (for Stratum protocol ordering)
+  pendingNotifications?: boolean
+  pendingJob?: boolean
+  // Vardiff tracking fields (only used when vardiff enabled)
+  vardiff?: {
+    lastShare: number  // Timestamp of last share
+    lastDifficultyChange: number  // Timestamp of last change
+    currentDifficulty: Decimal  // Current vardiff difficulty
+    initialized: boolean  // Whether vardiff has been initialized
+    shareCount: number  // Total shares submitted (for statistics)
+  }
 }
 
 export default class Server extends Stratum {
@@ -42,11 +53,13 @@ export default class Server extends Stratum {
   difficulty: string
   private readonly MAX_BUFFER_SIZE = 8192 // Increased from 512 for ASIC compatibility
   private readonly MAX_MESSAGES_PER_SECOND = 100 // Rate limiting to prevent abuse
+  private vardiffConfig: any
 
-  constructor (templates: Templates, hostName: string, port: number, difficulty: string) {
+  constructor (templates: Templates, hostName: string, port: number, difficulty: string, vardiffConfig?: any) {
     super(templates)
 
     this.difficulty = difficulty
+    this.vardiffConfig = vardiffConfig || { enabled: false }
 
     try {
       console.log(`Attempting to start Bun.listen on ${hostName}:${port}`)
@@ -143,7 +156,7 @@ export default class Server extends Stratum {
         cachedBytes: "",
         connectedAt: Date.now(),
         messageCount: 0,
-        extraNonce: randomBytes(2).toString('hex'), // 2 bytes = 4 hex chars
+        extraNonce: (randomBytes(2) as any).toString('hex'), // 2 bytes = 4 hex chars
         encoding: Encoding.BigHeader, // Default to standard encoding
         asicType: "",
         subscribed: false,
@@ -190,15 +203,15 @@ export default class Server extends Stratum {
     if (socket.data.messageCount === 0) {
       console.log(`[${timestamp}] ========================================`)
       console.log(`[${timestamp}] First data received from ${socket.remoteAddress}:${socket.remotePort} (${data.length} bytes)`)
-      console.log(`[${timestamp}] Raw bytes (hex): ${data.toString('hex').substring(0, 200)}`)
-      console.log(`[${timestamp}] First data preview: ${data.toString('utf8', 0, Math.min(200, data.length))}`)
-      console.log(`[${timestamp}] Full first message (first 500 chars): ${data.toString('utf8', 0, Math.min(500, data.length))}`)
+      console.log(`[${timestamp}] Raw bytes (hex): ${(data as any).toString('hex').substring(0, 200)}`)
+      console.log(`[${timestamp}] First data preview: ${(data as any).toString('utf8', 0, Math.min(200, data.length))}`)
+      console.log(`[${timestamp}] Full first message (first 500 chars): ${(data as any).toString('utf8', 0, Math.min(500, data.length))}`)
       
       // Check for common issues
       if (data.length === 0) {
         console.warn(`[${timestamp}] WARNING: Received empty data buffer!`)
       }
-      if (!data.toString('utf8').includes('{')) {
+      if (!(data as any).toString('utf8').includes('{')) {
         console.warn(`[${timestamp}] WARNING: First data doesn't contain JSON! May be binary or non-Stratum protocol.`)
       }
     }
@@ -271,6 +284,19 @@ export default class Server extends Stratum {
                       const extranonceJson = JSON.stringify(extranonceEvent) + '\n'
                       socket.write(extranonceJson)
                       console.log(`[${new Date().toISOString()}] Sent set_extranonce: ${extranonceJson.trim()}`)
+                      
+                      // Initialize vardiff if enabled (before sending difficulty)
+                      if (this.vardiffConfig?.enabled) {
+                        socket.data.vardiff = {
+                          lastShare: socket.data.connectedAt,
+                          lastDifficultyChange: Date.now(),
+                          currentDifficulty: new Decimal(this.difficulty), // Start with pool default
+                          initialized: true,
+                          shareCount: 0
+                        }
+                        // Use vardiff difficulty instead of fixed
+                        socket.data.difficulty = socket.data.vardiff.currentDifficulty
+                      }
                       
                       // Send mining.set_difficulty notification
                       const difficultyEvent: Event<'mining.set_difficulty'> = {
@@ -475,5 +501,92 @@ export default class Server extends Stratum {
     }
     
     return response
+  }
+
+  // Vardiff difficulty adjustment (only called if vardiff enabled)
+  private adjustDifficulty(socket: Socket<Miner>, timeSinceLastShare: number): void {
+    if (!socket.data.vardiff?.initialized || !this.vardiffConfig?.enabled) {
+      return
+    }
+    
+    const vardiff = socket.data.vardiff
+    const config = this.vardiffConfig
+    const now = Date.now()
+    
+    // Don't adjust too frequently (throttle changes)
+    if (now - vardiff.lastDifficultyChange < (config.changeInterval * 1000)) {
+      return
+    }
+    
+    // Need at least 2 shares to make meaningful adjustments
+    if (vardiff.shareCount < 2) {
+      return
+    }
+    
+    const timeSinceLastShareSeconds = timeSinceLastShare / 1000
+    const targetTime = config.targetTime
+    const variance = (config.variancePercent / 100) * targetTime
+    const minTarget = targetTime - variance
+    const maxTarget = targetTime + variance
+    
+    let newDifficulty = new Decimal(vardiff.currentDifficulty)
+    let shouldChange = false
+    
+    // Adjust based on share frequency (reference code pattern)
+    if (timeSinceLastShareSeconds < minTarget) {
+      // Miner submitting too fast - increase difficulty
+      const ratio = targetTime / timeSinceLastShareSeconds
+      const changeMultiplier = Math.min(ratio, config.maxChange)
+      newDifficulty = vardiff.currentDifficulty.mul(changeMultiplier)
+      shouldChange = true
+    } else if (timeSinceLastShareSeconds > maxTarget) {
+      // Miner submitting too slow - decrease difficulty
+      // Use smooth scaling like reference code (prevents sudden drops)
+      const MAX_ELAPSED_MS = 5 * 60 * 1000 // 5 minutes cap
+      const cappedTime = Math.min(timeSinceLastShare, MAX_ELAPSED_MS)
+      const timeWeight = cappedTime / MAX_ELAPSED_MS // 0 to 1
+      
+      // Scale down based on time weight (smooth ramp-down)
+      const scaledRatio = timeSinceLastShareSeconds / targetTime
+      const changeMultiplier = Math.max(1 / scaledRatio, 1 / config.maxChange) * timeWeight
+      newDifficulty = vardiff.currentDifficulty.mul(changeMultiplier)
+      shouldChange = true
+    }
+    
+    // Clamp to min/max difficulty
+    const minDiff = new Decimal(config.minDifficulty)
+    const maxDiff = new Decimal(config.maxDifficulty)
+    if (newDifficulty.lt(minDiff)) newDifficulty = minDiff
+    if (newDifficulty.gt(maxDiff)) newDifficulty = maxDiff
+    
+    // Only change if difference is significant (avoid tiny adjustments)
+    const diffPercent = newDifficulty.div(vardiff.currentDifficulty).minus(1).abs().mul(100)
+    if (shouldChange && diffPercent.gte(5)) { // At least 5% change
+      const oldDiff = vardiff.currentDifficulty.toNumber()
+      vardiff.currentDifficulty = newDifficulty
+      vardiff.lastDifficultyChange = now
+      socket.data.difficulty = newDifficulty // Update socket difficulty
+      
+      // Send new difficulty to miner
+      this.sendDifficultyUpdate(socket)
+      
+      console.log(`[Vardiff] Adjusted difficulty for ${socket.remoteAddress}: ${oldDiff.toFixed(0)} -> ${newDifficulty.toNumber().toFixed(0)} (interval: ${timeSinceLastShareSeconds.toFixed(1)}s, target: ${targetTime}s)`)
+    }
+  }
+
+  private sendDifficultyUpdate(socket: Socket<Miner>): void {
+    // @ts-ignore
+    if (socket.readyState !== 1) return
+    
+    try {
+      const event: Event<'mining.set_difficulty'> = {
+        method: 'mining.set_difficulty',
+        params: [socket.data.difficulty.toNumber()]
+      }
+      socket.write(JSON.stringify(event) + '\n')
+      console.log(`[Vardiff] Sent difficulty update: ${socket.data.difficulty.toNumber().toFixed(0)} to ${socket.remoteAddress}`)
+    } catch (err) {
+      console.error(`[Vardiff] Failed to send difficulty update to ${socket.remoteAddress}:`, err)
+    }
   }
 }

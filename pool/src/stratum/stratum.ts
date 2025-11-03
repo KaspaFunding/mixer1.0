@@ -372,6 +372,18 @@ export default class Stratum extends EventEmitter {
         this.recordShare(address, socket.data.difficulty.toNumber())
         // @ts-ignore - EventEmitter emit is available at runtime
         this.emit('block', block, { address, difficulty: socket.data.difficulty })
+        
+        // Track share for vardiff adjustment (blocks are also shares)
+        if (socket.data.vardiff?.initialized) {
+          const now = Date.now()
+          const oldLastShare = socket.data.vardiff.lastShare || socket.data.connectedAt
+          socket.data.vardiff.lastShare = now
+          socket.data.vardiff.shareCount = (socket.data.vardiff.shareCount || 0) + 1
+          const timeSinceLastShare = now - oldLastShare
+          if ((this as any).adjustDifficulty) {
+            (this as any).adjustDifficulty(socket, timeSinceLastShare)
+          }
+        }
       } catch (error) {
         // Block submission failed (e.g., IBD, invalid block, route full)
         // Don't emit block event - this block should not be counted
@@ -386,6 +398,23 @@ export default class Stratum extends EventEmitter {
       // Record valid share for hashrate calculation
       this.recordShare(address, socket.data.difficulty.toNumber())
       this.contributions.set(nonce, { address, difficulty: socket.data.difficulty })
+      
+      // Track share for vardiff adjustment (if enabled)
+      if (socket.data.vardiff?.initialized) {
+        const now = Date.now()
+        const oldLastShare = socket.data.vardiff.lastShare || socket.data.connectedAt
+        socket.data.vardiff.lastShare = now
+        socket.data.vardiff.shareCount = (socket.data.vardiff.shareCount || 0) + 1
+        
+        // Calculate time since last share
+        const timeSinceLastShare = now - oldLastShare
+        
+        // Adjust difficulty based on share frequency
+        // Note: adjustDifficulty will be implemented in Server class
+        if ((this as any).adjustDifficulty) {
+          (this as any).adjustDifficulty(socket, timeSinceLastShare)
+        }
+      }
     }
   }
 

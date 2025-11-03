@@ -41,8 +41,33 @@ export default class Templates {
     })
 
     if (report.type === 'success') {
-      const header = new Header(template.header) // TODO: convince core to return blocks hash on submitBlock
-      return header.finalize()
+      // Compute header hash locally first (for immediate return)
+      const header = new Header(template.header)
+      const computedHash = header.finalize()
+      
+      // Try to get the actual accepted block hash from the node
+      // The node may have a slightly different hash if it modified the block
+      // Wait a brief moment for block to be accepted, then query
+      try {
+        await new Promise(resolve => setTimeout(resolve, 500)) // Wait 500ms for block acceptance
+        const blockResponse = await this.rpc.getBlock({ 
+          hash: computedHash, 
+          includeTransactions: false 
+        }).catch(() => null)
+        
+        if (blockResponse?.block?.header?.hash) {
+          // Use the actual accepted hash from the node
+          const acceptedHash = blockResponse.block.header.hash
+          console.log(`[Templates] Block accepted: computed=${computedHash.substring(0, 16)}... actual=${acceptedHash.substring(0, 16)}...`)
+          return acceptedHash
+        }
+      } catch (err) {
+        // If query fails, fall back to computed hash
+        console.warn(`[Templates] Could not verify accepted block hash, using computed: ${err.message}`)
+      }
+      
+      // Fallback to computed hash if we can't get the actual one
+      return computedHash
     } else throw Error('Block is on IBD/route is full')
   }
 

@@ -21,6 +21,7 @@ type ShareHistoryEntry = {
 // @ts-ignore - EventEmitter is available at runtime in Bun
 export default class Stratum extends EventEmitter {
   private templates: Templates
+  private treasuryAddress: string // Store treasury address to prevent miners from using it
   private contributions: Map<bigint, Contribution> = new Map() // TODO: Apply PPLNS maybe?
   subscriptors: Set<Socket<Miner>> = new Set()
   miners: Map<string, Set<Socket<Miner>>> = new Map()
@@ -28,10 +29,11 @@ export default class Stratum extends EventEmitter {
   private readonly shareHistoryWindowMs: number = 60 * 1000 // 1 minute window
   private latestJob: { id: string, hash: string, timestamp: bigint } | null = null
 
-  constructor (templates: Templates) {
+  constructor (templates: Templates, treasuryAddress: string) {
     super()
 
     this.templates = templates
+    this.treasuryAddress = treasuryAddress
     this.templates.register((id, hash, timestamp, header) => this.announce(id, hash, timestamp, header))
   }
 
@@ -227,6 +229,15 @@ export default class Stratum extends EventEmitter {
     
     if (!name || name.trim().length === 0) {
       throw Error(`Worker name is not set. Request: ${identity}`)
+    }
+    
+    // CRITICAL: Prevent miners from using the pool's treasury address
+    // Check if this address matches the treasury address
+    // The treasury address is used in block templates, miners should use their own address
+    const treasuryAddressClean = this.treasuryAddress.replace(/^(kaspa:?|kaspatest:?)/i, '')
+    if (addressClean.toLowerCase() === treasuryAddressClean.toLowerCase()) {
+      const treasuryAddressWithPrefix = this.treasuryAddress.startsWith('kaspa:') ? this.treasuryAddress : `kaspa:${this.treasuryAddress}`
+      throw Error(`Cannot use pool treasury address (${treasuryAddressWithPrefix}) as miner address. Please use your own Kaspa address for receiving mining rewards.`)
     }
     
     // Store address without prefix internally (consistent with reference)

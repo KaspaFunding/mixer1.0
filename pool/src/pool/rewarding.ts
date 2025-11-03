@@ -25,6 +25,7 @@ export default class Rewarding {
     address: string
     difficulty: Decimal
   }[]) {
+    // Store contributions per address (aggregate work by address)
     let miners = new Map<string, Decimal>()
     const totalWork = contributions.reduce((knownWork, { address, difficulty }) => {
       const currentWork = miners.get(address) ?? new Decimal(0)
@@ -33,6 +34,7 @@ export default class Rewarding {
       return knownWork.plus(difficulty)
     }, new Decimal(0))
 
+    // Store as Map<string, Decimal> - address -> work mapping
     this.rewards.set(hash, miners)
     this.accumulatedWork.set(hash, totalWork)
 
@@ -58,9 +60,24 @@ export default class Rewarding {
   }
 
   private async determinePayments (amount: bigint) {
+    // CRITICAL: Always restore contributions from database before calculating payments
+    // This ensures contributions are available even after pool restart
+    // We restore ALL unpaid blocks to ensure miners get paid correctly
+    if (this.rewards.size === 0) {
+      console.log(`[Rewarding] Rewards map is empty, restoring contributions from database...`)
+    } else {
+      console.log(`[Rewarding] Rewards map has ${this.rewards.size} block(s), but checking for missing contributions...`)
+    }
+    
+    // Always restore - even if map has some entries, we might be missing blocks
+    await this.restoreContributionsFromDatabase()
+    
     let contributors: Map<string, Decimal> = new Map()
     let accumulatedWork = new Decimal(0)
     let payments: IPaymentOutput[] = []
+
+    // Log how many blocks we're processing
+    console.log(`[Rewarding] Processing ${this.rewards.size} block(s) for distribution`)
 
     for (const hash of this.rewards.keys()) {
       for (const [ address, work ] of this.rewards.get(hash)!) {
@@ -108,14 +125,12 @@ export default class Rewarding {
       }
 
       if (shouldPay) {
-        // Deduct the full balance before payment
+        // Deduct the full balance before payment (this happens BEFORE payment is sent)
+        // If payment fails, balance will be restored or handled by error recovery
         this.database.addBalance(address, -miner.balance)
 
-        // Update last payout time if time-based payouts are configured
-        // This resets the timer regardless of whether payout was triggered by threshold or time
-        if (paymentIntervalHours && paymentIntervalHours > 0) {
-          this.database.setLastPayoutTime(address, Date.now())
-        }
+        // NOTE: lastPayoutTime should NOT be set here - it will be set AFTER successful payment
+        // Setting it here would mark payment as sent even if treasury.send() fails
 
         // Ensure address has kaspa: prefix for payment (required by Kaspa SDK)
         const addressForPayment = address.startsWith('kaspa:') ? address : `kaspa:${address}`
@@ -133,5 +148,77 @@ export default class Rewarding {
     }
 
     return { contributors: contributors.size, payments }
+  }
+
+  // Restore contributions from database blocks
+  private async restoreContributionsFromDatabase() {
+    try {
+      // Get all blocks from database
+      const allBlocks = this.database.getBlocks(1000)
+      
+      if (allBlocks.length === 0) {
+        console.log(`[Rewarding] No blocks found in database to restore contributions`)
+        return
+      }
+
+      // Import Decimal
+      const Decimal = (await import('decimal.js')).default
+
+      // Restore contributions for each block
+      // IMPORTANT: Only restore UNPAID blocks - paid blocks don't need contributions anymore
+      let restoredCount = 0
+      let skippedPaidCount = 0
+      let skippedDuplicateCount = 0
+      
+      for (const block of allBlocks) {
+        // Skip blocks that are already marked as paid
+        if (block.paid) {
+          skippedPaidCount++
+          continue
+        }
+        
+        const addressClean = block.address.replace(/^(kaspa:?|kaspatest:?)/i, '')
+        const contribution = {
+          address: addressClean,
+          difficulty: new Decimal(block.difficulty || '0')
+        }
+
+        // Check if this block hash is already in rewards (don't duplicate)
+        if (!this.rewards.has(block.hash)) {
+          this.recordContributions(block.hash, [contribution])
+          restoredCount++
+          console.log(`[Rewarding] ✓ Restored contribution for block ${block.hash.substring(0, 16)}... from ${addressClean} (difficulty: ${block.difficulty})`)
+        } else {
+          skippedDuplicateCount++
+        }
+      }
+
+      console.log(`[Rewarding] Restored ${restoredCount} unpaid block contribution(s) from database`)
+      if (skippedPaidCount > 0) {
+        console.log(`[Rewarding] Skipped ${skippedPaidCount} paid block(s)`)
+      }
+      if (skippedDuplicateCount > 0) {
+        console.log(`[Rewarding] Skipped ${skippedDuplicateCount} duplicate block(s) already in rewards map`)
+      }
+      
+      // Log final state
+      if (this.rewards.size > 0) {
+        console.log(`[Rewarding] Rewards map now has ${this.rewards.size} block(s) ready for distribution`)
+        // Log which addresses will receive rewards
+        const addresses = new Set<string>()
+        for (const [hash, miners] of this.rewards) {
+          for (const [address] of miners) {
+            addresses.add(address)
+          }
+        }
+        if (addresses.size > 0) {
+          console.log(`[Rewarding] Contributors: ${addresses.size} address(es): ${Array.from(addresses).slice(0, 5).map(a => a.substring(0, 16) + '...').join(', ')}${addresses.size > 5 ? '...' : ''}`)
+        }
+      } else {
+        console.warn(`[Rewarding] ⚠️ WARNING: Rewards map is still empty after restoration! No contributions found for unpaid blocks.`)
+      }
+    } catch (error) {
+      console.error(`[Rewarding] Error restoring contributions from database:`, error)
+    }
   }
 }

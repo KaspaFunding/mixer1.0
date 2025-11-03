@@ -56,8 +56,8 @@ export default class Server extends Stratum {
   private vardiffConfig: any
   private vardiffMonitorInterval: any = null
 
-  constructor (templates: Templates, hostName: string, port: number, difficulty: string, vardiffConfig?: any) {
-    super(templates)
+  constructor (templates: Templates, treasuryAddress: string, hostName: string, port: number, difficulty: string, vardiffConfig?: any) {
+    super(templates, treasuryAddress)
 
     this.difficulty = difficulty
     this.vardiffConfig = vardiffConfig || { enabled: false }

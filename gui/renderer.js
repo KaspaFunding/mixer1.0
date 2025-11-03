@@ -2973,6 +2973,207 @@ if (refreshWorkersBtn) {
   refreshWorkersBtn.addEventListener('click', refreshWorkersDashboard);
 }
 
+// Mining Calculator Logic
+const calculatorHashrateInput = document.getElementById('calculator-hashrate');
+const calculatorHashrateUnit = document.getElementById('calculator-hashrate-unit');
+const calculatorPoolFeeInput = document.getElementById('calculator-pool-fee');
+const calculatorCalculateBtn = document.getElementById('calculator-calculate');
+const calculatorLoading = document.getElementById('calculator-loading');
+const calculatorResults = document.getElementById('calculator-results');
+const calculatorError = document.getElementById('calculator-error');
+
+// Format large numbers
+function formatNumber(num) {
+  if (num >= 1e12) return (num / 1e12).toFixed(2) + 'T';
+  if (num >= 1e9) return (num / 1e9).toFixed(2) + 'B';
+  if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
+  if (num >= 1e3) return (num / 1e3).toFixed(2) + 'K';
+  return num.toFixed(2);
+}
+
+// Format hashrate
+function formatHashrate(hashrate) {
+  if (hashrate >= 1e12) return (hashrate / 1e12).toFixed(2) + ' TH/s';
+  if (hashrate >= 1e9) return (hashrate / 1e9).toFixed(2) + ' GH/s';
+  if (hashrate >= 1e6) return (hashrate / 1e6).toFixed(2) + ' MH/s';
+  if (hashrate >= 1e3) return (hashrate / 1e3).toFixed(2) + ' KH/s';
+  return hashrate.toFixed(2) + ' H/s';
+}
+
+// Convert hashrate to H/s
+function convertHashrateToHashes(value, unit) {
+  const multipliers = {
+    'H/s': 1,
+    'KH/s': 1e3,
+    'MH/s': 1e6,
+    'GH/s': 1e9,
+    'TH/s': 1e12
+  };
+  return value * (multipliers[unit] || 1);
+}
+
+// Get current Kaspa block reward from pool API
+// This uses the actual block template to get the real coinbase reward
+async function getBlockReward() {
+  try {
+    const response = await fetch('http://127.0.0.1:8080/block-reward', { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error('Failed to fetch block reward');
+    }
+    const data = await response.json();
+    
+    if (data.reward && data.reward > 0) {
+      return data.reward; // KAS per block
+    }
+    
+    // Fallback if reward is null or 0
+    throw new Error('Block reward not available');
+  } catch (err) {
+    console.warn('[Calculator] Could not fetch block reward:', err);
+    // Fallback: Use approximate (but warn user)
+    return null; // Return null to indicate fallback needed
+  }
+}
+
+async function calculateMiningEarnings() {
+  // Hide previous results and errors
+  calculatorResults.style.display = 'none';
+  calculatorError.style.display = 'none';
+  calculatorLoading.style.display = 'block';
+
+  try {
+    // Get user inputs
+    const hashrateValue = parseFloat(calculatorHashrateInput.value) || 0;
+    const hashrateUnit = calculatorHashrateUnit.value;
+    const poolFeePercent = parseFloat(calculatorPoolFeeInput.value) || 1;
+
+    if (hashrateValue <= 0) {
+      throw new Error('Please enter a valid hashrate value');
+    }
+
+    // Convert user hashrate to H/s
+    const userHashrateHashes = convertHashrateToHashes(hashrateValue, hashrateUnit);
+
+    // Fetch network info from pool API
+    let networkDifficulty = 0;
+    let networkHashrate = 0;
+    let daaScore = null;
+    let blockReward = 440; // Default fallback
+
+    try {
+      // Get network info
+      const networkResponse = await fetch('http://127.0.0.1:8080/network-info', { cache: 'no-store' });
+      if (!networkResponse.ok) {
+        throw new Error('Pool API not available. Make sure the pool is running.');
+      }
+      const networkInfo = await networkResponse.json();
+      
+      // Network difficulty from getBlockDagInfo
+      const difficultyStr = networkInfo.difficulty || '0';
+      networkDifficulty = parseFloat(difficultyStr);
+      daaScore = networkInfo.virtualDaaScore ? parseFloat(networkInfo.virtualDaaScore) : null;
+      
+      if (networkDifficulty <= 0 || !isFinite(networkDifficulty)) {
+        throw new Error('Unable to get network difficulty. Node may not be synced.');
+      }
+
+      // For Kaspa: difficulty represents the target hashrate needed
+      // Post-Crescendo: 10 blocks/second, so difficulty ≈ network hashrate in hashes/second
+      networkHashrate = networkDifficulty;
+      
+    } catch (apiError) {
+      throw new Error(`Failed to fetch network data: ${apiError.message}. Ensure the pool and node are running.`);
+    }
+
+    // Get actual block reward from pool API (uses Kaspa WASM to get real coinbase amount)
+    blockReward = await getBlockReward();
+    
+    // If we couldn't get the actual reward, throw an error (don't use inaccurate fallback)
+    if (blockReward === null || blockReward <= 0) {
+      throw new Error('Unable to determine current block reward. Please ensure the pool and node are running.');
+    }
+    
+    // Calculate earnings based on network-wide mining
+    // Block reward is fetched from actual block template (varies with emission schedule)
+    // Kaspa post-Crescendo: 10 blocks per second (0.1 seconds per block)
+    const blockTimeSeconds = 0.1; // Post-Crescendo block time
+    const blocksPerDay = 86400 / blockTimeSeconds; // 864,000 blocks per day at 10 BPS
+    const poolFeeMultiplier = 1 - (poolFeePercent / 100);
+
+    // Your share of the network (what percentage of all blocks you'd find)
+    const yourShareOfNetwork = userHashrateHashes / networkHashrate;
+    
+    // Blocks you expect to find per day (based on your share of network)
+    const yourBlocksPerDay = blocksPerDay * yourShareOfNetwork;
+    
+    // Daily earnings (after pool fee - represents what you'd earn in a pool)
+    const dailyKAS = yourBlocksPerDay * blockReward * poolFeeMultiplier;
+
+    // Calculate for different periods
+    const earnings24h = dailyKAS;
+    const earnings7d = dailyKAS * 7;
+    const earnings30d = dailyKAS * 30;
+
+    // Display network info
+    document.getElementById('calculator-network-hashrate').textContent = formatHashrate(networkHashrate);
+    document.getElementById('calculator-network-difficulty').textContent = formatNumber(networkDifficulty);
+    
+    // Display block reward and your share
+    const shareElement = document.getElementById('calculator-your-share');
+    if (shareElement) {
+      shareElement.textContent = `${(yourShareOfNetwork * 100).toFixed(6)}%`;
+    }
+    
+    // Display block reward (if element exists)
+    const blockRewardElement = document.getElementById('calculator-block-reward');
+    if (blockRewardElement) {
+      blockRewardElement.textContent = `${blockReward.toFixed(4)} KAS`;
+    }
+    
+    // Debug output to console for verification
+    console.log('[Calculator] Block reward:', blockReward.toFixed(4), 'KAS');
+    console.log('[Calculator] Your blocks per day:', yourBlocksPerDay.toFixed(2));
+    console.log('[Calculator] Daily earnings:', dailyKAS.toFixed(2), 'KAS');
+    console.log('[Calculator] Formula check:', yourBlocksPerDay.toFixed(2), 'blocks ×', blockReward.toFixed(4), 'KAS ×', (poolFeeMultiplier * 100).toFixed(1) + '% =', dailyKAS.toFixed(2), 'KAS/day');
+
+    // Display earnings (KAS only for now - USD would require price API)
+    document.getElementById('calculator-24h-kas').textContent = 
+      earnings24h >= 0.01 ? earnings24h.toFixed(2) + ' KAS' : '<0.01 KAS';
+    document.getElementById('calculator-24h-usd').textContent = 'Price data unavailable';
+    
+    document.getElementById('calculator-7d-kas').textContent = 
+      earnings7d >= 0.01 ? earnings7d.toFixed(2) + ' KAS' : '<0.01 KAS';
+    document.getElementById('calculator-7d-usd').textContent = 'Price data unavailable';
+    
+    document.getElementById('calculator-30d-kas').textContent = 
+      earnings30d >= 0.01 ? earnings30d.toFixed(2) + ' KAS' : '<0.01 KAS';
+    document.getElementById('calculator-30d-usd').textContent = 'Price data unavailable';
+
+    // Show results
+    calculatorLoading.style.display = 'none';
+    calculatorResults.style.display = 'block';
+
+  } catch (error) {
+    calculatorLoading.style.display = 'none';
+    calculatorError.style.display = 'block';
+    document.getElementById('calculator-error-text').textContent = error.message;
+  }
+}
+
+// Attach event listener
+if (calculatorCalculateBtn) {
+  calculatorCalculateBtn.addEventListener('click', calculateMiningEarnings);
+}
+
+// Also calculate on Enter key in hashrate input
+if (calculatorHashrateInput) {
+  calculatorHashrateInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter' && calculatorCalculateBtn) {
+      calculatorCalculateBtn.click();
+    }
+  });
+}
+
 // Load config on tab open
 document.addEventListener('DOMContentLoaded', () => {
   loadPoolConfig().catch(() => {});

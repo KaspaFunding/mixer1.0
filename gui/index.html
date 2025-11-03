@@ -707,6 +707,86 @@
                 </div>
               </div>
             </div>
+            <div class="session-card collapsible-section">
+              <div class="session-header collapsible-header" data-target="pool-calculator-panel">
+                <div>
+                  <div class="session-id">Mining Calculator</div>
+                </div>
+                <span class="collapse-icon">▼</span>
+              </div>
+              <div class="session-details collapsible-content" id="pool-calculator-panel">
+                <div class="form-group" style="margin-bottom:1rem;">
+                  <label>Your Hashrate</label>
+                  <div style="display:flex; gap:8px; align-items:center;">
+                    <input type="number" id="calculator-hashrate" value="16000" min="0" step="0.01" style="flex:1;" />
+                    <select id="calculator-hashrate-unit" style="padding:0.5rem; border-radius:6px; background:rgba(255,255,255,0.1); border:1px solid rgba(112,199,186,0.2); color:var(--text-primary); min-width:100px;">
+                      <option value="H/s">H/s</option>
+                      <option value="KH/s">KH/s</option>
+                      <option value="MH/s" selected>MH/s</option>
+                      <option value="GH/s">GH/s</option>
+                      <option value="TH/s">TH/s</option>
+                    </select>
+                  </div>
+                  <div class="helper-text" style="margin-top:4px; font-size:0.85rem;">
+                    Enter your mining hashrate (from your miner or mining software)
+                  </div>
+                </div>
+                <div class="form-group" style="margin-bottom:1rem;">
+                  <label>Pool Fee (%)</label>
+                  <input type="number" id="calculator-pool-fee" value="1" min="0" max="100" step="0.1" />
+                  <div class="helper-text" style="margin-top:4px; font-size:0.85rem;">
+                    Default pool fee (adjust if you've customized it)
+                  </div>
+                </div>
+                <button id="calculator-calculate" class="btn btn-primary" style="width:100%; margin-bottom:1rem;">Calculate Earnings</button>
+                <div id="calculator-loading" style="display:none; text-align:center; padding:1rem; color:var(--text-secondary);">
+                  Loading network data...
+                </div>
+                <div id="calculator-results" style="display:none;">
+                  <div style="margin-bottom:1rem; padding:1rem; background:rgba(0,0,0,0.2); border-radius:8px; border:1px solid rgba(112,199,186,0.2);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+                      <span style="font-weight:500;">Network Hashrate:</span>
+                      <span id="calculator-network-hashrate" style="font-family:ui-monospace,Menlo,Consolas,'Courier New',monospace;"></span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+                      <span style="font-weight:500;">Network Difficulty:</span>
+                      <span id="calculator-network-difficulty" style="font-family:ui-monospace,Menlo,Consolas,'Courier New',monospace;"></span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+                      <span style="font-weight:500;">Current Block Reward:</span>
+                      <span id="calculator-block-reward" style="font-family:ui-monospace,Menlo,Consolas,'Courier New',monospace; color:#70c7ba;"></span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                      <span style="font-weight:500;">Your Network Share:</span>
+                      <span id="calculator-your-share" style="font-family:ui-monospace,Menlo,Consolas,'Courier New',monospace; color:#70c7ba;"></span>
+                    </div>
+                  </div>
+                  <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:0.75rem; margin-bottom:1rem;">
+                    <div style="padding:1rem; background:rgba(0,0,0,0.2); border-radius:8px; text-align:center;">
+                      <div style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:0.5rem;">24 Hours</div>
+                      <div id="calculator-24h-kas" style="font-size:1.5rem; font-weight:600; color:#70c7ba; margin-bottom:0.25rem;">-</div>
+                      <div id="calculator-24h-usd" style="font-size:0.9rem; color:var(--text-secondary);">-</div>
+                    </div>
+                    <div style="padding:1rem; background:rgba(0,0,0,0.2); border-radius:8px; text-align:center;">
+                      <div style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:0.5rem;">7 Days</div>
+                      <div id="calculator-7d-kas" style="font-size:1.5rem; font-weight:600; color:#70c7ba; margin-bottom:0.25rem;">-</div>
+                      <div id="calculator-7d-usd" style="font-size:0.9rem; color:var(--text-secondary);">-</div>
+                    </div>
+                    <div style="padding:1rem; background:rgba(0,0,0,0.2); border-radius:8px; text-align:center;">
+                      <div style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:0.5rem;">30 Days</div>
+                      <div id="calculator-30d-kas" style="font-size:1.5rem; font-weight:600; color:#70c7ba; margin-bottom:0.25rem;">-</div>
+                      <div id="calculator-30d-usd" style="font-size:0.9rem; color:var(--text-secondary);">-</div>
+                    </div>
+                  </div>
+                  <div style="padding:0.75rem; background:rgba(255,193,7,0.1); border-left:3px solid #ffc107; border-radius:4px; font-size:0.85rem; color:var(--text-secondary);">
+                    <strong>Note:</strong> Calculations are estimates based on current network conditions. Actual earnings may vary due to pool luck, network difficulty changes, and block rewards.
+                  </div>
+                </div>
+                <div id="calculator-error" style="display:none; padding:1rem; background:rgba(220,53,69,0.1); border-left:3px solid #dc3545; border-radius:4px; color:#dc3545; font-size:0.9rem;">
+                  <strong>Error:</strong> <span id="calculator-error-text"></span>
+                </div>
+              </div>
+            </div>
           </div>
           <!-- Pool Dashboard: Workers -->
           <div class="session-card pool-card full collapsible-section">

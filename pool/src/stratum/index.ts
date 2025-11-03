@@ -54,12 +54,18 @@ export default class Server extends Stratum {
   private readonly MAX_BUFFER_SIZE = 8192 // Increased from 512 for ASIC compatibility
   private readonly MAX_MESSAGES_PER_SECOND = 100 // Rate limiting to prevent abuse
   private vardiffConfig: any
+  private vardiffMonitorInterval: any = null
 
   constructor (templates: Templates, hostName: string, port: number, difficulty: string, vardiffConfig?: any) {
     super(templates)
 
     this.difficulty = difficulty
     this.vardiffConfig = vardiffConfig || { enabled: false }
+    
+    // Start periodic monitoring for stuck miners (if vardiff enabled)
+    if (this.vardiffConfig?.enabled) {
+      this.startVardiffMonitoring()
+    }
 
     try {
       console.log(`Attempting to start Bun.listen on ${hostName}:${port}`)
@@ -529,6 +535,28 @@ export default class Server extends Stratum {
     const minTarget = targetTime - variance
     const maxTarget = targetTime + variance
     
+    // CRITICAL SAFEGUARD: If no shares for too long, aggressively reduce difficulty
+    // Prevents ASICs from being locked out by too-high difficulty
+    const NO_SHARE_TIMEOUT_SECONDS = 3 * 60 // 3 minutes without shares
+    const CRITICAL_TIMEOUT_SECONDS = 5 * 60 // 5 minutes = emergency reset
+    const EMERGENCY_RESET_DIFFICULTY_MULTIPLIER = 0.5 // Drop to 50% if no shares for 5+ min
+    
+    if (timeSinceLastShareSeconds >= CRITICAL_TIMEOUT_SECONDS) {
+      // Emergency: No shares for 5+ minutes - reset difficulty to prevent ASIC lockout
+      const emergencyDiff = vardiff.currentDifficulty.mul(EMERGENCY_RESET_DIFFICULTY_MULTIPLIER)
+      const minDiff = new Decimal(config.minDifficulty)
+      const newDifficulty = emergencyDiff.gt(minDiff) ? emergencyDiff : minDiff
+      
+      const oldDiff = vardiff.currentDifficulty.toNumber()
+      vardiff.currentDifficulty = newDifficulty
+      vardiff.lastDifficultyChange = now
+      socket.data.difficulty = newDifficulty
+      
+      this.sendDifficultyUpdate(socket)
+      console.log(`[Vardiff] EMERGENCY RESET: No shares for ${(timeSinceLastShareSeconds / 60).toFixed(1)}min - reduced difficulty for ${socket.remoteAddress}: ${oldDiff.toFixed(0)} -> ${newDifficulty.toNumber().toFixed(0)} to prevent ASIC lockout`)
+      return
+    }
+    
     let newDifficulty = new Decimal(vardiff.currentDifficulty)
     let shouldChange = false
     
@@ -536,19 +564,44 @@ export default class Server extends Stratum {
     if (timeSinceLastShareSeconds < minTarget) {
       // Miner submitting too fast - increase difficulty
       const ratio = targetTime / timeSinceLastShareSeconds
-      const changeMultiplier = Math.min(ratio, config.maxChange)
+      
+      // SAFEGUARD: Cap difficulty increases more aggressively if already high
+      // If difficulty is already >50% of max, limit increases to prevent overshooting
+      const maxDiff = new Decimal(config.maxDifficulty)
+      const currentPercentOfMax = vardiff.currentDifficulty.div(maxDiff).toNumber()
+      let effectiveMaxChange = config.maxChange
+      
+      if (currentPercentOfMax > 0.5) {
+        // If difficulty is already above 50% of max, reduce max increase rate
+        effectiveMaxChange = 1.5 // Cap at 1.5x instead of 2.0x
+        console.log(`[Vardiff] Difficulty is high (${(currentPercentOfMax * 100).toFixed(1)}% of max), capping increase to ${effectiveMaxChange}x`)
+      }
+      
+      const changeMultiplier = Math.min(ratio, effectiveMaxChange)
       newDifficulty = vardiff.currentDifficulty.mul(changeMultiplier)
       shouldChange = true
     } else if (timeSinceLastShareSeconds > maxTarget) {
       // Miner submitting too slow - decrease difficulty
-      // Use smooth scaling like reference code (prevents sudden drops)
-      const MAX_ELAPSED_MS = 5 * 60 * 1000 // 5 minutes cap
-      const cappedTime = Math.min(timeSinceLastShare, MAX_ELAPSED_MS)
-      const timeWeight = cappedTime / MAX_ELAPSED_MS // 0 to 1
       
-      // Scale down based on time weight (smooth ramp-down)
-      const scaledRatio = timeSinceLastShareSeconds / targetTime
-      const changeMultiplier = Math.max(1 / scaledRatio, 1 / config.maxChange) * timeWeight
+      // SAFEGUARD: If no shares for significant time (>3 min), reduce more aggressively
+      let changeMultiplier = 1.0
+      if (timeSinceLastShareSeconds >= NO_SHARE_TIMEOUT_SECONDS) {
+        // No shares for 3+ minutes - reduce by larger amount to prevent ASIC lockout
+        const timeoutRatio = timeSinceLastShareSeconds / NO_SHARE_TIMEOUT_SECONDS
+        const aggressiveReduction = Math.min(0.7, 1 / timeoutRatio) // Reduce to at most 70% of current
+        changeMultiplier = aggressiveReduction
+        console.log(`[Vardiff] No shares for ${(timeSinceLastShareSeconds / 60).toFixed(1)}min - aggressive reduction for ${socket.remoteAddress}`)
+      } else {
+        // Use smooth scaling like reference code (prevents sudden drops)
+        const MAX_ELAPSED_MS = 5 * 60 * 1000 // 5 minutes cap
+        const cappedTime = Math.min(timeSinceLastShare, MAX_ELAPSED_MS)
+        const timeWeight = cappedTime / MAX_ELAPSED_MS // 0 to 1
+        
+        // Scale down based on time weight (smooth ramp-down)
+        const scaledRatio = timeSinceLastShareSeconds / targetTime
+        changeMultiplier = Math.max(1 / scaledRatio, 1 / config.maxChange) * timeWeight
+      }
+      
       newDifficulty = vardiff.currentDifficulty.mul(changeMultiplier)
       shouldChange = true
     }
@@ -558,6 +611,14 @@ export default class Server extends Stratum {
     const maxDiff = new Decimal(config.maxDifficulty)
     if (newDifficulty.lt(minDiff)) newDifficulty = minDiff
     if (newDifficulty.gt(maxDiff)) newDifficulty = maxDiff
+    
+    // SAFEGUARD: Never exceed 90% of maxDifficulty to leave room for increases
+    // This prevents difficulty from hitting the absolute maximum and becoming stuck
+    const safeMaxDiff = maxDiff.mul(0.9)
+    if (newDifficulty.gt(safeMaxDiff)) {
+      newDifficulty = safeMaxDiff
+      console.log(`[Vardiff] Capped difficulty at 90% of max (${safeMaxDiff.toNumber().toFixed(0)}) to prevent ASIC lockout`)
+    }
     
     // Only change if difference is significant (avoid tiny adjustments)
     const diffPercent = newDifficulty.div(vardiff.currentDifficulty).minus(1).abs().mul(100)
@@ -572,6 +633,65 @@ export default class Server extends Stratum {
       
       console.log(`[Vardiff] Adjusted difficulty for ${socket.remoteAddress}: ${oldDiff.toFixed(0)} -> ${newDifficulty.toNumber().toFixed(0)} (interval: ${timeSinceLastShareSeconds.toFixed(1)}s, target: ${targetTime}s)`)
     }
+  }
+
+  // Periodic monitoring to detect miners stuck due to high difficulty
+  // Checks every minute for miners who haven't submitted shares
+  // CRITICAL: This catches cases where difficulty is too high and ASIC can't submit shares
+  private startVardiffMonitoring(): void {
+    if (this.vardiffMonitorInterval) {
+      return // Already monitoring
+    }
+    
+    // Check every 60 seconds for miners without recent shares
+    // @ts-ignore - setInterval available at runtime
+    this.vardiffMonitorInterval = setInterval(() => {
+      if (!this.vardiffConfig?.enabled) return
+      
+      const now = Date.now()
+      const STUCK_MINER_TIMEOUT_MS = 3 * 60 * 1000 // 3 minutes
+      const CRITICAL_STUCK_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
+      
+      // Check all subscribed miners via subscriptors (from base Stratum class)
+      try {
+        // @ts-ignore - subscriptors available from base class
+        const activeSockets = Array.from(this.subscriptors || [])
+        let stuckMinersFound = 0
+        let emergencyResets = 0
+        
+        for (const socket of activeSockets) {
+          if (!socket.data?.vardiff?.initialized) continue
+          
+          const timeSinceLastShare = now - (socket.data.vardiff.lastShare || socket.data.connectedAt)
+          const timeSinceLastShareSeconds = timeSinceLastShare / 1000
+          
+          // If no shares for critical timeout, force emergency reset
+          // This is CRITICAL - if difficulty is too high, ASIC can't submit shares
+          // So we must proactively check and reduce difficulty
+          if (timeSinceLastShare >= CRITICAL_STUCK_TIMEOUT_MS) {
+            console.log(`[Vardiff Monitor] CRITICAL: Stuck miner detected ${socket.remoteAddress} (no shares for ${(timeSinceLastShareSeconds / 60).toFixed(1)}min) - forcing emergency difficulty reset`)
+            // Force an adjustment check (pass large timeSinceLastShare to trigger emergency reset)
+            this.adjustDifficulty(socket, timeSinceLastShare)
+            emergencyResets++
+            stuckMinersFound++
+          } else if (timeSinceLastShare >= STUCK_MINER_TIMEOUT_MS) {
+            // If no shares for 3+ minutes but less than 5, still trigger adjustment
+            // This ensures we proactively reduce difficulty before ASIC gets completely stuck
+            console.log(`[Vardiff Monitor] Stuck miner detected ${socket.remoteAddress} (no shares for ${(timeSinceLastShareSeconds / 60).toFixed(1)}min) - reducing difficulty`)
+            this.adjustDifficulty(socket, timeSinceLastShare)
+            stuckMinersFound++
+          }
+        }
+        
+        if (stuckMinersFound > 0 || emergencyResets > 0) {
+          console.log(`[Vardiff Monitor] Found ${stuckMinersFound} stuck miner(s), ${emergencyResets} emergency reset(s)`)
+        }
+      } catch (err) {
+        console.error('[Vardiff Monitor] Error in monitoring:', err)
+      }
+    }, 60000) // Check every 60 seconds
+    
+    console.log('[Vardiff] Started periodic monitoring for stuck miners (checks every 60s)')
   }
 
   private sendDifficultyUpdate(socket: Socket<Miner>): void {

@@ -25,11 +25,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     detectKPUBFormat: (extendedKey) => ipcRenderer.invoke('wallet:detect-kpub-format', extendedKey),
     detectWalletType: (extendedKey, mnemonic) => ipcRenderer.invoke('wallet:detect-wallet-type', { extendedKey, mnemonic }),
     info: () => ipcRenderer.invoke('wallet:info'),
+    getPrivateKey: () => ipcRenderer.invoke('wallet:getPrivateKey'),
     balance: () => ipcRenderer.invoke('wallet:balance'),
     transactionHistory: (limit, offset) => ipcRenderer.invoke('wallet:transaction-history', { limit, offset }),
     estimateFee: (address, amountKAS) => ipcRenderer.invoke('wallet:estimate-fee', { address, amountKAS }),
     send: (address, amountKAS) => ipcRenderer.invoke('wallet:send', { address, amountKAS }),
     remove: () => ipcRenderer.invoke('wallet:remove'),
+    getUtxos: (address) => ipcRenderer.invoke('wallet:get-utxos', { address }),
+    hasMatchingUtxo: (targetAmountSompi, tolerancePercent, excludeUtxos) => ipcRenderer.invoke('wallet:has-matching-utxo', { targetAmountSompi, tolerancePercent, excludeUtxos }),
+    createMatchingUtxo: (targetAmountSompi, excludeUtxos) => ipcRenderer.invoke('wallet:create-matching-utxo', { targetAmountSompi, excludeUtxos }),
+    waitForUtxo: (targetAmountSompi, timeoutMs, pollIntervalMs, createdTxId, excludeUtxos) => ipcRenderer.invoke('wallet:wait-for-utxo', { targetAmountSompi, timeoutMs, pollIntervalMs, createdTxId, excludeUtxos }),
     addressBook: {
       list: () => ipcRenderer.invoke('wallet:addressbook:list'),
       add: (address, label, category) => ipcRenderer.invoke('wallet:addressbook:add', { address, label, category }),
@@ -79,5 +84,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // QR Code generation (via main process)
   qrcode: {
     toDataURL: (text, options) => ipcRenderer.invoke('qrcode:toDataURL', { text, options })
+  },
+  
+  // Coinjoin
+  coinjoin: {
+    create: (destinationAddress, options) => ipcRenderer.invoke('coinjoin:create', { destinationAddress, ...options }),
+    get: (sessionId) => ipcRenderer.invoke('coinjoin:get', sessionId),
+    list: () => ipcRenderer.invoke('coinjoin:list'),
+    stats: () => ipcRenderer.invoke('coinjoin:stats'),
+    reveal: (sessionId, revealedUtxos, destinationAddress) => ipcRenderer.invoke('coinjoin:reveal', { sessionId, revealedUtxos, destinationAddress }),
+        build: (sessionIds) => ipcRenderer.invoke('coinjoin:build', { sessionIds }),
+        sign: (sessionId, transactionData, privateKeyHex) => ipcRenderer.invoke('coinjoin:sign', { sessionId, transactionData, privateKeyHex }),
+        submit: (transactionData, allSignatures) => ipcRenderer.invoke('coinjoin:submit', { transactionData, allSignatures }),
+        storeSignatures: (transactionData, signatures) => ipcRenderer.invoke('coinjoin:store-signatures', { transactionData, signatures }),
+        getSignatures: (transactionData) => ipcRenderer.invoke('coinjoin:get-signatures', { transactionData }),
+    ws: {
+      info: () => ipcRenderer.invoke('coinjoin:ws:info'),
+      start: (port) => ipcRenderer.invoke('coinjoin:ws:start', { port }),
+      stop: () => ipcRenderer.invoke('coinjoin:ws:stop')
+    }
   }
 });

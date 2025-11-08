@@ -1,0 +1,21 @@
+{
+  "amountKAS": 1.0,
+  "autoWallet": false,
+  "participants": [
+    {
+      "privateKey": "priv key here",
+      "address": "kaspa address of that priv key",
+      "destinationAddress": "kaspa address of that priv key"
+    },
+    {
+      "privateKey": "priv key here",
+      "address": "kaspa address of that priv key",
+      "destinationAddress": "kaspa address of that priv key"
+    },
+    {
+      "privateKey": "priv key here",
+      "address": "kaspa address of that priv key",
+      "destinationAddress": "kaspa address of that priv key"
+    }
+  ]
+}

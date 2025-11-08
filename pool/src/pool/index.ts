@@ -6,6 +6,11 @@ import type Treasury from '../treasury'
 import type Stratum from '../stratum'
 import type { Contribution } from '../stratum/stratum'
 import Api from './api'
+import CoinbaseFinder from './distribution/coinbase'
+import PaymentProcessor from './distribution/payments'
+import DistributionManager from './distribution'
+import BlockRecorder from './blocks'
+import ForcePayoutManager from './payouts'
 
 export default class Pool {
   private treasury: Treasury
@@ -14,20 +19,42 @@ export default class Pool {
   private rewarding: Rewarding
   private monitoring: Monitoring
   private api: Api | undefined
+  private coinbaseFinder: CoinbaseFinder
+  private paymentProcessor: PaymentProcessor
+  private distributionManager: DistributionManager
+  private blockRecorder: BlockRecorder
+  private forcePayoutManager: ForcePayoutManager
 
-  constructor (treasury: Treasury, stratum: Stratum, paymentThreshold: string) {
+  constructor (treasury: Treasury, stratum: Stratum, paymentThreshold: string, database?: Database) {
     this.treasury = treasury
     this.stratum = stratum
     
-    this.database = new Database('./database')
+    // Use provided database or create new one
+    this.database = database || new Database('./database')
     this.rewarding = new Rewarding(this.treasury.processor.rpc, this.database, paymentThreshold)
     this.monitoring = new Monitoring()
+    this.coinbaseFinder = new CoinbaseFinder(this.treasury, this.treasury.processor.rpc, this.monitoring)
+    this.paymentProcessor = new PaymentProcessor(this.database, this.treasury, this.monitoring)
+    this.distributionManager = new DistributionManager(
+      this.database,
+      this.rewarding,
+      this.treasury,
+      this.coinbaseFinder,
+      this.paymentProcessor,
+      this.monitoring
+    )
+    this.blockRecorder = new BlockRecorder(this.database, this.rewarding, this.treasury, this.stratum, this.monitoring)
+    this.forcePayoutManager = new ForcePayoutManager(this.database, this.treasury, this.monitoring)
+
+    // Restore contributions from unpaid blocks on startup
+    this.restoreUnpaidContributions()
 
     this.stratum.on('subscription', (ip: string, agent: string) => this.monitoring.log(`Miner ${ip} subscribed into notifications with ${agent}.`))
-    this.stratum.on('block', (hash: string, contribution: Contribution) => this.record(hash, contribution))
-    this.treasury.on('coinbase', (amount: bigint) => {
-      this.monitoring.log(`[EVENT] Received 'coinbase' event: ${(Number(amount) / 100000000).toFixed(8)} KAS`)
-      this.distribute(amount)
+    this.stratum.on('block', (hash: string, contribution: Contribution) => this.blockRecorder.recordBlock(hash, contribution))
+    this.treasury.on('coinbase', async (netAmount: bigint, coinbaseAmount?: bigint) => {
+      // Calculate coinbase amount if not provided
+      const fullCoinbaseAmount = coinbaseAmount || (netAmount * 10000n) / BigInt(10000 - (this.treasury.fee * 100))
+      this.distributionManager.distribute(netAmount, fullCoinbaseAmount)
     })
     this.treasury.on('revenue', (amount: bigint) => {
       this.monitoring.log(`[EVENT] Received 'revenue' event: ${(Number(amount) / 100000000).toFixed(8)} KAS pool fee`)
@@ -43,430 +70,178 @@ export default class Pool {
   }
 
   private async revenuize (amount: bigint) {
-    const oldBalance = this.database.getMiner('me').balance
     this.database.addBalance('me', amount)
-    const newBalance = this.database.getMiner('me').balance
-    const amountKAS = (Number(amount) / 100000000).toFixed(8)
-    const balanceKAS = (Number(newBalance) / 100000000).toFixed(8)
-    this.monitoring.log(`[Treasury] Generated ${amountKAS} KAS revenue (pool fee), treasury balance now: ${balanceKAS} KAS`)
-    console.log(`[Treasury] Pool earnings updated: old=${(Number(oldBalance) / 100000000).toFixed(8)} KAS, added=${amountKAS} KAS, new=${balanceKAS} KAS`)
   }
 
-  private async record (hash: string, contribution: Contribution) {
-    const contributions = this.stratum.dump()
-    contributions.push(contribution)
-
-    const contributorCount = this.rewarding.recordContributions(hash, contributions)
-
-    // Verify block is actually in the chain before recording
+  // Restore unpaid contributions on pool startup
+  private async restoreUnpaidContributions() {
     try {
-      const blockInfo = await this.treasury.processor.rpc.getBlock({ hash, includeTransactions: false }).catch(() => null)
+      const allBlocks = this.database.getBlocks(1000)
+      const unpaidBlocks = allBlocks.filter(b => !b.paid)
       
-      if (!blockInfo?.block) {
-        // Block not found in chain - might be orphaned/rejected
-        const addressWithPrefix = contribution.address.startsWith('kaspa:') ? contribution.address : `kaspa:${contribution.address}`
-        this.monitoring.log(`⚠️ Block ${hash.substring(0, 16)}... submitted but not found in chain (may be orphaned/rejected)`)
-        return // Don't record orphaned blocks
-      }
-      
-      // Use the hash from the block header (ensures we use the canonical hash from the node)
-      const confirmedHash = blockInfo.block.header.hash || hash
-      
-      // Block confirmed in chain - record it
-      this.database.incrementBlockCount(contribution.address)
-      
-      // Store block details with confirmed hash
-      this.database.addBlock({
-        hash: confirmedHash,
-        address: contribution.address,
-        timestamp: Date.now(),
-        difficulty: contribution.difficulty.toString(),
-        paid: false
-      })
-
-      const addressWithPrefix = contribution.address.startsWith('kaspa:') ? contribution.address : `kaspa:${contribution.address}`
-      this.monitoring.log(`✓ Block ${confirmedHash.substring(0, 16)}... found by ${addressWithPrefix} and confirmed in chain, ${contributorCount} contributor(s) recorded for rewards distribution.`)
-      this.monitoring.log(`Rewards will mature after 100 DAA blocks (~10 seconds at 10 blocks/second) and then be distributed to miners.`)
-    } catch (err) {
-      // If verification fails, still record it but warn
-      const addressWithPrefix = contribution.address.startsWith('kaspa:') ? contribution.address : `kaspa:${contribution.address}`
-      this.monitoring.log(`⚠️ Could not verify block ${hash.substring(0, 16)}... in chain: ${err instanceof Error ? err.message : String(err)}`)
-      this.monitoring.log(`Recording block anyway - verify manually in explorer`)
-      
-      this.database.incrementBlockCount(contribution.address)
-      this.database.addBlock({
-        hash,
-        address: contribution.address,
-        timestamp: Date.now(),
-        difficulty: contribution.difficulty.toString(),
-        paid: false
-      })
-    }
-  }
-
-  private async distribute (amount: bigint) {
-    this.monitoring.log(`[DISTRIBUTE] Coinbase reward matured: ${sompiToKaspaStringWithSuffix(amount, this.treasury.processor.networkId!)}`)
-    this.rewarding.recordPayment(amount, async (contributors, payments) => {
-      this.monitoring.log(
-        `[DISTRIBUTE] Coinbase with ${sompiToKaspaStringWithSuffix(amount, this.treasury.processor.networkId!)} is getting distributed into ${contributors} contributors.`
-      )
-
-      if (payments.length === 0) {
-        this.monitoring.log(`[DISTRIBUTE] No payments found for current distribution cycle - rewards will be added to miner balances.`)
-        return
-      }
-      
-      // Store payment amounts before sending (for error recovery)
-      const paymentAmounts = new Map<string, bigint>()
-      for (const payment of payments) {
-        const addressStr = typeof payment.address === 'string' ? payment.address : payment.address.toString()
-        const addressForStorage = addressStr.replace(/^(kaspa:?|kaspatest:?)/i, '')
-        paymentAmounts.set(addressForStorage, payment.amount)
-      }
-      
-      this.monitoring.log(`[DISTRIBUTE] Processing ${payments.length} payout(s) totaling ${sompiToKaspaStringWithSuffix(payments.reduce((sum, p) => sum + BigInt(p.amount), 0n), this.treasury.processor.networkId!)}`)
-      
-      let txHashes: string[]
-      try {
-        // Log payment details before sending
-        for (const payment of payments) {
-          const addressStr = typeof payment.address === 'string' ? payment.address : payment.address.toString()
-          const addressForStorage = addressStr.replace(/^(kaspa:?|kaspatest:?)/i, '')
-          const amountKAS = (Number(payment.amount) / 100000000).toFixed(8)
-          this.monitoring.log(`[DISTRIBUTE] Sending ${amountKAS} KAS to ${payment.address}`)
+      if (unpaidBlocks.length > 0) {
+        // Restore contributions to memory
+        await this.rewarding.restoreContributionsFromDatabase()
+        
+        // Check for mature blocks that need manual distribution
+        const oldBlocks = unpaidBlocks.filter(b => (Date.now() - b.timestamp) > 2 * 60 * 1000 && !b.paid)
+        if (oldBlocks.length > 0) {
+          // Wait for treasury to initialize, then check maturity
+          setTimeout(async () => {
+            try {
+              await this.distributionManager.checkAndDistributeMatureBlocks(oldBlocks)
+            } catch (error) {
+              console.error('[POOL] Error checking mature blocks:', error)
+            }
+          }, 5000)
         }
-        
-        txHashes = await this.treasury.send(payments)
-        
-        if (!txHashes || txHashes.length === 0) {
-          throw new Error('treasury.send() returned no transaction hashes')
-        }
-        
-        this.monitoring.log(`[DISTRIBUTE] Successfully sent ${txHashes.length} transaction(s)`)
-      } catch (sendError) {
-        const errorMsg = sendError instanceof Error ? sendError.message : String(sendError)
-        this.monitoring.log(`[DISTRIBUTE] ERROR: Failed to send payments: ${errorMsg}`)
-        this.monitoring.log(`[DISTRIBUTE] Error stack: ${sendError instanceof Error ? sendError.stack : 'N/A'}`)
-        
-        // CRITICAL: Restore balances if payment failed (balances were deducted before sending)
-        this.monitoring.log(`[DISTRIBUTE] Restoring balances after payment failure...`)
-        for (const [address, amount] of paymentAmounts) {
-          this.database.addBalance(address, amount)
-          const amountKAS = (Number(amount) / 100000000).toFixed(8)
-          this.monitoring.log(`[DISTRIBUTE] ✓ Restored ${amountKAS} KAS to ${address}`)
-        }
-        
-        // Don't throw - allow pool to continue, balances are restored
-        return
-      }
-      
-      // Record payments in database only after successful send
-      // treasury.send returns string[] - convert to ensure it's string
-      const txHashStrings: string[] = txHashes.map(h => String(h))
-      const addressesPaid = new Set<string>()
-      
-      for (let i = 0; i < payments.length; i++) {
-        const payment = payments[i]
-        const txHash = txHashStrings[i] || txHashStrings[0] // Use first hash if array mismatch
-        // Ensure address is string (IPaymentOutput.address may be string | Address)
-        // Address may have kaspa: prefix - remove it for storage (addresses stored without prefix)
-        const addressStr = typeof payment.address === 'string' ? payment.address : payment.address.toString()
-        const addressForStorage = addressStr.replace(/^(kaspa:?|kaspatest:?)/i, '')
-        
-        // Record payment in database
-        this.database.addPayment({
-          hash: txHash,
-          address: addressForStorage,
-          amount: payment.amount.toString(),
-          timestamp: Date.now()
-        })
-        
-        // Track which addresses received payments for block marking
-        addressesPaid.add(addressForStorage)
-        
-        // Update last payout time (only after successful payment)
-        const miner = this.database.getMiner(addressForStorage)
-        if (miner.paymentIntervalHours && miner.paymentIntervalHours > 0) {
-          this.database.setLastPayoutTime(addressForStorage, Date.now())
-        }
-      }
-      
-      // Mark blocks as paid for all blocks found by addresses that received payments
-      for (const address of addressesPaid) {
-        const blocks = this.database.getBlocksByAddress(address, 100)
-        for (const block of blocks) {
-          if (!block.paid) {
-            // Update block to mark as paid
-            const updatedBlock = { ...block, paid: true }
-            this.database.addBlock(updatedBlock) // This will overwrite the existing block
-          }
-        }
-      }
-      
-      this.monitoring.log(`Reward threshold exceeded by miner(s), individual rewards sent: \n${txHashes.map(h => `           - ${h}`).join('\n')}`)
-    })
-  }
-
-  async forcePayoutMiner(address: string): Promise<{ success: boolean, paymentAmount: bigint, txHash: string, error?: string }> {
-    try {
-      // Remove kaspa: prefix if present
-      const addressWithoutPrefix = address.replace(/^(kaspa:?|kaspatest:?)/i, '')
-      const miner = this.database.getMiner(addressWithoutPrefix)
-      
-      if (!miner || miner.balance <= 0n) {
-        return {
-          success: false,
-          paymentAmount: 0n,
-          txHash: '',
-          error: miner ? 'Miner has no balance to payout' : 'Miner not found'
-        }
-      }
-      
-      const balanceKAS = (Number(miner.balance) / 100000000).toFixed(8)
-      const addressWithPrefix = address.startsWith('kaspa:') ? address : `kaspa:${address}`
-      
-      this.monitoring.log(`Force payout (single miner): ${addressWithPrefix}, Balance: ${balanceKAS} KAS`)
-      
-      // Create payment
-      const payment = {
-        address: addressWithPrefix,
-        amount: miner.balance
-      }
-      
-      // Send payment
-      let txHashes: string[]
-      try {
-        txHashes = await this.treasury.send([payment])
-        
-        if (!txHashes || txHashes.length === 0) {
-          throw new Error('treasury.send() returned no transaction hashes')
-        }
-      } catch (sendError) {
-        const errorMsg = sendError instanceof Error ? sendError.message : String(sendError)
-        this.monitoring.log(`Force payout (single miner): Treasury.send failed: ${errorMsg}`)
-        throw new Error(`Failed to send transaction: ${errorMsg}`)
-      }
-      
-      // Record payment in database
-      const txHash = txHashes[0]
-      this.database.addPayment({
-        hash: String(txHash),
-        address: addressWithoutPrefix,
-        amount: miner.balance.toString(),
-        timestamp: Date.now()
-      })
-      
-      // Deduct balance (was already deducted before sending, but ensure it's 0)
-      this.database.addBalance(addressWithoutPrefix, -miner.balance)
-      
-      // Update last payout time if interval is set
-      if (miner.paymentIntervalHours && miner.paymentIntervalHours > 0) {
-        this.database.setLastPayoutTime(addressWithoutPrefix, Date.now())
-      }
-      
-      // Mark blocks as paid
-      const blocks = this.database.getBlocksByAddress(addressWithoutPrefix, 100)
-      for (const block of blocks) {
-        if (!block.paid) {
-          const updatedBlock = { ...block, paid: true }
-          this.database.addBlock(updatedBlock)
-        }
-      }
-      
-      this.monitoring.log(`Force payout (single miner): Successfully sent ${balanceKAS} KAS to ${addressWithPrefix} (tx: ${String(txHash).substring(0, 16)}...)`)
-      
-      return {
-        success: true,
-        paymentAmount: miner.balance,
-        txHash: String(txHash)
       }
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error)
-      this.monitoring.log(`Force payout (single miner) failed: ${errorMsg}`)
-      console.error('[Pool] Force payout (single miner) error:', error)
-      return {
-        success: false,
-        paymentAmount: 0n,
-        txHash: '',
-        error: errorMsg
-      }
+      this.monitoring.log(`[POOL] Error restoring contributions on startup: ${error instanceof Error ? error.message : String(error)}`)
+      console.error('[POOL] Error details:', error)
     }
+  }
+
+
+  async forcePayoutMiner(address: string): Promise<{ success: boolean, paymentAmount: bigint, txHash: string, error?: string }> {
+    return await this.forcePayoutManager.forcePayoutMiner(address)
   }
 
   async forcePayoutAll(): Promise<{ success: boolean, paymentsCount: number, totalAmount: bigint, txHashes: string[], error?: string }> {
+    return await this.forcePayoutManager.forcePayoutAll()
+  }
+
+  /**
+   * Cleanup database - remove old blocks and optionally reset balances
+   */
+  async cleanupDatabase(options: {
+    clearOldBlocks?: boolean
+    blockAgeDays?: number
+    clearPaidBlocks?: boolean
+    clearAllBlocks?: boolean
+    resetBalances?: boolean
+    keepRecentBlocks?: number
+  }): Promise<{ success: boolean, blocksRemoved: number, balancesReset: number, error?: string }> {
     try {
-      const allMiners = this.database.getAllMiners()
-      const payments: Array<{ address: string, amount: bigint }> = []
-
-      // Debug: Log all miners found
-      this.monitoring.log(`Force payout: Found ${allMiners.size} miner(s) in database`)
-      
-      // Collect all miners with balance > 0
-      // Force payout should send ALL pending balances regardless of threshold/time settings
-      for (const [address, miner] of allMiners) {
-        const balanceKAS = (Number(miner.balance) / 100000000).toFixed(8)
-        const addressWithPrefix = address.startsWith('kaspa:') ? address : `kaspa:${address}`
-        const balanceSompi = miner.balance.toString()
-        
-        // Log detailed info for debugging
-        const paymentIntervalHours = miner.paymentIntervalHours
-        const paymentThreshold = miner.paymentThreshold
-        const lastPayoutTime = this.database.getLastPayoutTime(address)
-        
-        this.monitoring.log(`  Miner: ${addressWithPrefix}, Balance: ${balanceKAS} KAS (${balanceSompi} sompi)`)
-        if (paymentIntervalHours) {
-          this.monitoring.log(`    Payment interval: ${paymentIntervalHours} hours, Last payout: ${lastPayoutTime ? new Date(lastPayoutTime).toISOString() : 'never'}`)
-        }
-        if (paymentThreshold) {
-          const thresholdKAS = (Number(paymentThreshold) / 100000000).toFixed(8)
-          this.monitoring.log(`    Payment threshold: ${thresholdKAS} KAS`)
-        }
-        
-        // Force payout sends ANY balance > 0, regardless of threshold/time
-        if (miner.balance > 0n) {
-          // Ensure address has kaspa: prefix for payment (required by Kaspa SDK)
-          const addressForPayment = address.startsWith('kaspa:') ? address : `kaspa:${address}`
-          payments.push({
-            address: addressForPayment,
-            amount: miner.balance
-          })
-          this.monitoring.log(`    ✓ Added to force payout queue: ${balanceKAS} KAS`)
-        } else {
-          this.monitoring.log(`    ⚠ Skipped (balance is 0)`)
-        }
-      }
-
-      if (payments.length === 0) {
-        // Check if any miners exist at all
-        if (allMiners.size === 0) {
-          this.monitoring.log('Force payout: No miners found in database')
-        } else {
-          this.monitoring.log('Force payout: No miners with pending balance (all balances are 0 - may have already been paid)')
-          // Log recent payments for context
-          for (const [address, miner] of allMiners) {
-            const addressWithPrefix = address.startsWith('kaspa:') ? address : `kaspa:${address}`
-            const recentPayments = this.database.getPaymentsByAddress(address, 3)
-            if (recentPayments.length > 0) {
-              const latestPayment = recentPayments[0]
-              const paymentKAS = (Number(latestPayment.amount) / 100000000).toFixed(8)
-              const paymentTime = new Date(latestPayment.timestamp).toISOString()
-              this.monitoring.log(`  ${addressWithPrefix}: Last payment ${paymentKAS} KAS at ${paymentTime} (tx: ${latestPayment.hash.substring(0, 16)}...)`)
-            }
-          }
-        }
-        return {
-          success: true,
-          paymentsCount: 0,
-          totalAmount: 0n,
-          txHashes: []
-        }
-      }
-
-      // Calculate total amount
-      const totalAmount = payments.reduce((sum, p) => sum + p.amount, 0n)
-      
-      // Check treasury balance before attempting payouts
-      const treasuryBalance = this.database.getMiner('me').balance
-      const requiredAmount = totalAmount
-      
-      // Note: We don't check if treasury has enough balance because treasury.send will handle UTXO management
-      // But we should log warnings if balance seems low
-      this.monitoring.log(`Force payout: Processing ${payments.length} payments totaling ${sompiToKaspaStringWithSuffix(totalAmount, this.treasury.processor.networkId!)}`)
-      
-      // Log payment details
-      for (const payment of payments) {
-        const addressWithPrefix = payment.address.startsWith('kaspa:') ? payment.address : `kaspa:${payment.address}`
-        const amountKAS = (Number(payment.amount) / 100000000).toFixed(8)
-        this.monitoring.log(`  - ${addressWithPrefix}: ${amountKAS} KAS`)
-      }
-
-      // Send all payments
-      let txHashes: string[]
-      try {
-        txHashes = await this.treasury.send(payments.map(p => ({
-          address: p.address,
-          amount: p.amount
-        })))
-      } catch (sendError) {
-        const errorMsg = sendError instanceof Error ? sendError.message : String(sendError)
-        this.monitoring.log(`Force payout: Treasury.send failed: ${errorMsg}`)
-        throw new Error(`Failed to send transactions: ${errorMsg}`)
-      }
-      
-      // Validate that we got transaction hashes back
-      if (!txHashes || txHashes.length === 0) {
-        throw new Error('No transaction hashes returned from treasury.send - transactions may not have been submitted')
-      }
-      
-      if (txHashes.length < payments.length) {
-        this.monitoring.log(`Warning: Expected ${payments.length} transaction hashes, got ${txHashes.length}`)
-      }
-      
-      // Convert txHashes to string array (treasury.send returns string[])
-      const txHashStrings: string[] = txHashes.map(h => String(h))
-
-      // Record payments and deduct balances
-      for (let i = 0; i < payments.length; i++) {
-        const payment = payments[i]
-        const txHash = txHashStrings[i] || txHashStrings[txHashStrings.length - 1] // Use last hash if array mismatch
-        
-        // Validate transaction hash
-        if (!txHash || txHash.length === 0) {
-          this.monitoring.log(`Warning: Missing transaction hash for payment ${i + 1} to ${payment.address}`)
-          continue
-        }
-        
-        // Address may have kaspa: prefix - remove it for storage (addresses stored without prefix)
-        const addressForStorage = payment.address.replace(/^(kaspa:?|kaspatest:?)/i, '')
-        
-        // Record payment
-        this.database.addPayment({
-          hash: txHash,
-          address: addressForStorage,
-          amount: payment.amount.toString(),
-          timestamp: Date.now()
-        })
-
-        // Deduct balance and update last payout time (use address without prefix for database lookup)
-        this.database.addBalance(addressForStorage, -payment.amount)
-        const miner = this.database.getMiner(addressForStorage)
-        if (miner.paymentIntervalHours && miner.paymentIntervalHours > 0) {
-          this.database.setLastPayoutTime(addressForStorage, Date.now())
-        }
-        
-        // Mark blocks as paid for this address
-        const blocks = this.database.getBlocksByAddress(addressForStorage, 100)
-        for (const block of blocks) {
-          if (!block.paid) {
-            const updatedBlock = { ...block, paid: true }
-            this.database.addBlock(updatedBlock) // Overwrite with paid status
-          }
-        }
-        
-        // Log successful payment
-        const addressWithPrefix = payment.address.startsWith('kaspa:') ? payment.address : `kaspa:${payment.address}`
-        this.monitoring.log(`  ✓ Paid ${(Number(payment.amount) / 100000000).toFixed(8)} KAS to ${addressWithPrefix} - tx: ${txHash}`)
-      }
-
-      this.monitoring.log(`Force payout: Successfully sent ${payments.length} payment(s) with ${txHashStrings.length} transaction(s)`)
-
+      const result = this.database.cleanupDatabase(options)
+      this.monitoring.log(`[CLEANUP] Removed ${result.blocksRemoved} block(s), reset ${result.balancesReset} balance(s)`)
       return {
         success: true,
-        paymentsCount: payments.length,
-        totalAmount,
-        txHashes: txHashStrings
+        ...result
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
-      this.monitoring.log(`Force payout failed: ${errorMsg}`)
-      console.error('[Pool] Force payout error:', error)
+      this.monitoring.log(`[CLEANUP] Database cleanup failed: ${errorMsg}`)
       return {
         success: false,
-        paymentsCount: 0,
-        totalAmount: 0n,
-        txHashes: [] as string[],
+        blocksRemoved: 0,
+        balancesReset: 0,
         error: errorMsg
       }
     }
   }
+
+  /**
+   * Settle partial payout and clean up database
+   * Sends whatever treasury can afford, then cleans up broken data
+   */
+  async settlePayoutAndCleanup(): Promise<{ success: boolean, partialPayment?: { amount: bigint, txHash?: string }, cleanup?: { blocksMarked: number, balancesReset: number }, error?: string }> {
+    try {
+      this.monitoring.log(`[SETTLE] Starting settle payout and cleanup...`)
+      
+      // Step 1: Try to send partial payout (what treasury can afford)
+      const allMiners = this.database.getAllMiners()
+      let partialPayment: { amount: bigint, txHash?: string } | undefined = undefined
+      
+      for (const [address, miner] of allMiners) {
+        if (miner.balance > 0n) {
+          // Check treasury balance
+          let treasuryBalance = 0n
+          try {
+            const utxoResult = await this.treasury.processor.rpc.getUtxosByAddresses({ addresses: [this.treasury.address] })
+            if (utxoResult && utxoResult.entries && utxoResult.entries.length > 0) {
+              treasuryBalance = utxoResult.entries.reduce((sum: bigint, utxo: any) => {
+                const amount = typeof utxo.amount === 'bigint' ? utxo.amount : BigInt(utxo.amount || 0)
+                return sum + amount
+              }, 0n)
+            }
+          } catch (error) {
+            this.monitoring.log(`[SETTLE] Could not check treasury balance: ${error instanceof Error ? error.message : String(error)}`)
+          }
+          
+          const balanceKAS = (Number(miner.balance) / 100000000).toFixed(8)
+          const treasuryKAS = (Number(treasuryBalance) / 100000000).toFixed(8)
+          
+          if (treasuryBalance > 0n && treasuryBalance < miner.balance) {
+            // Send partial payment (what treasury can afford)
+            const partialAmount = treasuryBalance - 10000n // Leave small amount for fees
+            const addressForPayment = address.startsWith('kaspa:') ? address : `kaspa:${address}`
+            
+            this.monitoring.log(`[SETTLE] Sending partial payment: ${(Number(partialAmount) / 100000000).toFixed(8)} KAS (of ${balanceKAS} KAS balance, treasury has ${treasuryKAS} KAS)`)
+            
+            try {
+              const txHashes = await this.treasury.send([{
+                address: addressForPayment,
+                amount: partialAmount
+              }])
+              
+              if (txHashes && txHashes.length > 0) {
+                const addressWithoutPrefix = address.replace(/^(kaspa:?|kaspatest:?)/i, '')
+                this.database.addBalance(addressWithoutPrefix, -partialAmount)
+                
+                // Record payment
+                const paymentRecord = this.database.createPaymentRecord({
+                  id: txHashes[0],
+                  address: addressWithoutPrefix,
+                  amount: partialAmount,
+                  status: 'sent',
+                  txId: txHashes[0],
+                  notes: `Partial payout - settled ${(Number(partialAmount) / 100000000).toFixed(8)} KAS before cleanup`
+                })
+                this.database.addPayment(paymentRecord)
+                
+                partialPayment = { amount: partialAmount, txHash: txHashes[0] }
+                this.monitoring.log(`[SETTLE] ✓ Sent partial payment: ${(Number(partialAmount) / 100000000).toFixed(8)} KAS (tx: ${txHashes[0].substring(0, 16)}...)`)
+              }
+            } catch (sendError) {
+              this.monitoring.log(`[SETTLE] Partial payment failed: ${sendError instanceof Error ? sendError.message : String(sendError)}`)
+              // Continue with cleanup anyway
+            }
+          } else if (treasuryBalance === 0n) {
+            this.monitoring.log(`[SETTLE] Treasury has no balance - skipping partial payout`)
+          } else {
+            this.monitoring.log(`[SETTLE] Treasury has sufficient balance (${treasuryKAS} KAS) - will send full balance in normal payout`)
+          }
+          
+          // Only process first miner (typically only one with balance)
+          break
+        }
+      }
+      
+      // Step 2: Clean up database
+      this.monitoring.log(`[SETTLE] Proceeding with database cleanup...`)
+      const cleanupResult = await this.cleanupDatabase({
+        clearPaidBlocks: true,
+        resetBalances: true,
+        keepRecentBlocks: 100
+      })
+      
+      return {
+        success: true,
+        partialPayment,
+        cleanup: cleanupResult.success ? {
+          blocksMarked: cleanupResult.blocksRemoved,
+          balancesReset: cleanupResult.balancesReset
+        } : undefined
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error)
+      this.monitoring.log(`[SETTLE] Settle and cleanup failed: ${errorMsg}`)
+      return {
+        success: false,
+        error: errorMsg
+      }
+    }
+  }
+
 }

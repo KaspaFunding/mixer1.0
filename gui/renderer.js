@@ -18,6 +18,9 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     // Load tab data
     if (tabName === 'sessions') {
       loadSessions();
+    } else if (tabName === 'coinjoin') {
+      loadCoinjoinSessions();
+      refreshCoinjoinStats();
     } else if (tabName === 'wallet') {
       checkWalletStatus();
   } else if (tabName === 'pool') {
@@ -28,10 +31,11 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   });
 });
 
-// Status message helper
+// Status message helper (from utils/dom-helpers.js)
 function showMessage(text, type = 'info', duration = 5000) {
   const msg = document.getElementById('status-message');
-  // Support both plain text and HTML content
+  if (!msg) return;
+  
   if (text.includes('<') && text.includes('>')) {
     msg.innerHTML = text;
   } else {
@@ -44,22 +48,32 @@ function showMessage(text, type = 'info', duration = 5000) {
   }, duration);
 }
 
-// HTML escape helper
+// HTML escape helper (from utils/dom-helpers.js)
 function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
 }
 
-// Session state management
+// Session state management (from services/session-ui.js)
 let allSessionsData = [];
 let currentFilter = 'all';
 let currentSort = 'newest';
 let currentSearch = '';
 
-// Helper: Render timeline for a session
+// Helper: Render timeline for a session (from services/session-ui.js)
 function renderTimeline(session) {
-  const steps = [
+  // Check if this is a coinjoin session
+  const isCoinjoin = session.type === 'coinjoin';
+  
+  // Different timeline steps for coinjoin vs regular mixing
+  const steps = isCoinjoin ? [
+    { id: 'committed', label: 'Committed', icon: '🔒' },
+    { id: 'revealed', label: 'Revealed', icon: '🔓' },
+    { id: 'entered', label: 'Entered', icon: '💰' },
+    { id: 'building', label: 'Building', icon: '🔨' },
+    { id: 'completed', label: 'Completed', icon: '🎉' }
+  ] : [
     { id: 'waiting', label: 'Waiting', icon: '⏳' },
     { id: 'deposit_received', label: 'Deposit', icon: '💰' },
     { id: 'sent_to_intermediate', label: 'Intermediate', icon: '🔄' },
@@ -75,11 +89,11 @@ function renderTimeline(session) {
       <div class="timeline-steps">
         ${steps.map((step, idx) => {
           let stepClass = '';
-          if (errorStatus && step.id === 'waiting') {
+          if (errorStatus && idx === 0) {
             stepClass = 'completed';
-          } else if (idx < statusIndex) {
+          } else if (statusIndex >= 0 && idx < statusIndex) {
             stepClass = 'completed';
-          } else if (idx === statusIndex && !errorStatus) {
+          } else if (statusIndex >= 0 && idx === statusIndex && !errorStatus) {
             stepClass = 'active';
           }
           
@@ -95,38 +109,45 @@ function renderTimeline(session) {
   `;
 }
 
-// Helper: Filter and sort sessions
-function filterAndSortSessions(sessions) {
-  let filtered = [...sessions];
-  
-  // Apply search filter
-  if (currentSearch.trim()) {
-    const searchLower = currentSearch.toLowerCase();
-    filtered = filtered.filter(({ sessionId, session }) => {
-      return sessionId.toLowerCase().includes(searchLower) ||
-             session.depositAddress?.toLowerCase().includes(searchLower) ||
-             session.intermediateAddress?.toLowerCase().includes(searchLower) ||
-             session.payoutTxIds?.some(tx => tx.toLowerCase().includes(searchLower)) ||
-             session.intermediateTxId?.toLowerCase().includes(searchLower);
-    });
+// Helper: Apply search filter (from services/session-ui.js)
+function applySearchFilter(sessions, searchTerm) {
+  if (!searchTerm.trim()) {
+    return sessions;
   }
   
-  // Apply status filter
-  if (currentFilter !== 'all') {
-    filtered = filtered.filter(({ session }) => {
-      if (currentFilter === 'deposit_received') {
-        return session.status === 'deposit_received' || session.status === 'sent_to_intermediate';
-      }
-      return session.status === currentFilter;
-    });
+  const searchLower = searchTerm.toLowerCase();
+  return sessions.filter(({ sessionId, session }) => {
+    return sessionId.toLowerCase().includes(searchLower) ||
+           session.depositAddress?.toLowerCase().includes(searchLower) ||
+           session.intermediateAddress?.toLowerCase().includes(searchLower) ||
+           session.payoutTxIds?.some(tx => tx.toLowerCase().includes(searchLower)) ||
+           session.intermediateTxId?.toLowerCase().includes(searchLower);
+  });
+}
+
+// Helper: Apply status filter (from services/session-ui.js)
+function applyStatusFilter(sessions, filter) {
+  if (filter === 'all') {
+    return sessions;
   }
   
-  // Apply sorting
-  filtered.sort((a, b) => {
+  return sessions.filter(({ session }) => {
+    if (filter === 'deposit_received') {
+      return session.status === 'deposit_received' || session.status === 'sent_to_intermediate';
+    }
+    return session.status === filter;
+  });
+}
+
+// Helper: Sort sessions (from services/session-ui.js)
+function sortSessions(sessions, sortBy) {
+  const sorted = [...sessions];
+  
+  sorted.sort((a, b) => {
     const sessionA = a.session;
     const sessionB = b.session;
     
-    switch (currentSort) {
+    switch (sortBy) {
       case 'newest':
         return (sessionB.updatedAt || sessionB.createdAt || 0) - (sessionA.updatedAt || sessionA.createdAt || 0);
       case 'oldest':
@@ -142,11 +163,21 @@ function filterAndSortSessions(sessions) {
     }
   });
   
-  return filtered;
+  return sorted;
 }
 
-// Helper: Render session card
+// Helper: Filter and sort sessions (from services/session-ui.js)
+function filterAndSortSessions(sessions) {
+  let filtered = applySearchFilter(sessions, currentSearch);
+  filtered = applyStatusFilter(filtered, currentFilter);
+  return sortSessions(filtered, currentSort);
+}
+
+// Helper: Render session card (from services/session-ui.js)
 function renderSessionCard({ sessionId, session }) {
+  // Check if this is a coinjoin session
+  const isCoinjoin = session.type === 'coinjoin' || sessionId.startsWith('coinjoin_');
+  
   return `
     <div class="session-card" data-session-id="${sessionId}" data-status="${session.status}">
       <div class="session-header">
@@ -155,47 +186,95 @@ function renderSessionCard({ sessionId, session }) {
           <div>
             <div class="session-id">${sessionId.substring(0, 16)}...</div>
             <span class="status-badge status-${session.status}">${session.status.replace(/_/g, ' ')}</span>
+            ${isCoinjoin ? `<span class="status-badge" style="background: var(--accent-secondary); margin-left: 0.25rem;">${session.zeroTrustMode ? 'Zero-Trust' : 'Trusted'} Coinjoin</span>` : ''}
           </div>
         </div>
       </div>
-      ${renderTimeline(session)}
+      ${renderTimeline({ ...session, type: isCoinjoin ? 'coinjoin' : session.type })}
       <div class="collapsible-section" style="margin-top: 0.75rem;">
         <div class="collapsible-header" data-target="session-details-${sessionId}">
           <span style="font-weight: 600; font-size: 0.9rem; color: var(--text-secondary);">Session Details</span>
           <span class="collapse-icon">▼</span>
         </div>
         <div class="session-details collapsible-content" id="session-details-${sessionId}">
-          <div class="detail-row">
-            <span class="detail-label">Deposit Address:</span>
-            <span class="address-display">${session.depositAddress}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Amount:</span>
-            <span>${(session.amount / 1e8).toFixed(8)} KAS</span>
-          </div>
-          ${session.intermediateAddress ? `
-            <div class="detail-row">
-              <span class="detail-label">Intermediate:</span>
-              <span class="address-display">${session.intermediateAddress}</span>
-            </div>
-          ` : ''}
-          ${session.payoutTxIds && session.payoutTxIds.length > 0 ? `
-            <div class="detail-row">
-              <span class="detail-label">Payout TX:</span>
-              <span class="address-display">${session.payoutTxIds[0]}</span>
-            </div>
-          ` : ''}
-          ${session.intermediateConfirmed && session.intermediateDelayUntil ? `
-            <div class="detail-row">
-              <span class="detail-label">Payout ETA:</span>
-              <span id="eta-${sessionId}">calculating...</span>
+          ${isCoinjoin ? `
+            <!-- Coinjoin session details -->
+            ${session.depositAddress ? `
+              <div class="detail-row">
+                <span class="detail-label">Deposit Address:</span>
+                <span class="address-display">${session.depositAddress}</span>
+              </div>
+            ` : ''}
+            ${session.amount ? `
+              <div class="detail-row">
+                <span class="detail-label">Amount:</span>
+                <span>${(Number(session.amount) / 1e8).toFixed(8)} KAS</span>
+              </div>
+            ` : ''}
+            ${session.destinationAddress ? `
+              <div class="detail-row">
+                <span class="detail-label">Destination:</span>
+                <span class="address-display">${session.destinationAddress}</span>
+              </div>
+            ` : ''}
+            ${session.utxoCommitments && session.utxoCommitments.length > 0 ? `
+              <div class="detail-row">
+                <span class="detail-label">UTXO Commitments:</span>
+                <span>${session.utxoCommitments.length}</span>
+              </div>
+            ` : ''}
+            ${session.destinationHash ? `
+              <div class="detail-row">
+                <span class="detail-label">Destination Hash:</span>
+                <span class="address-display" style="font-size: 0.8rem;">${session.destinationHash.substring(0, 32)}...</span>
+              </div>
+            ` : ''}
+          ` : `
+            <!-- Regular mixing session details -->
+            ${session.depositAddress ? `
+              <div class="detail-row">
+                <span class="detail-label">Deposit Address:</span>
+                <span class="address-display">${session.depositAddress}</span>
+              </div>
+            ` : ''}
+            ${session.amount ? `
+              <div class="detail-row">
+                <span class="detail-label">Amount:</span>
+                <span>${(Number(session.amount) / 1e8).toFixed(8)} KAS</span>
+              </div>
+            ` : ''}
+            ${session.intermediateAddress ? `
+              <div class="detail-row">
+                <span class="detail-label">Intermediate:</span>
+                <span class="address-display">${session.intermediateAddress}</span>
+              </div>
+            ` : ''}
+            ${session.payoutTxIds && session.payoutTxIds.length > 0 ? `
+              <div class="detail-row">
+                <span class="detail-label">Payout TX:</span>
+                <span class="address-display">${session.payoutTxIds[0]}</span>
+              </div>
+            ` : ''}
+            ${session.intermediateConfirmed && session.intermediateDelayUntil ? `
+              <div class="detail-row">
+                <span class="detail-label">Payout ETA:</span>
+                <span id="eta-${sessionId}">calculating...</span>
+              </div>
+            ` : ''}
+          `}
+          ${session.error ? `
+            <div class="detail-row" style="color: var(--error);">
+              <span class="detail-label">Error:</span>
+              <span>${escapeHtml(session.error)}</span>
             </div>
           ` : ''}
         </div>
       </div>
       <div class="session-actions">
         <button type="button" class="btn btn-secondary" data-action="view" data-id="${sessionId}">View</button>
-        <button type="button" class="btn btn-secondary" data-action="export-keys" data-id="${sessionId}">Export Keys</button>
+        ${!isCoinjoin ? `
+          <button type="button" class="btn btn-secondary" data-action="export-keys" data-id="${sessionId}">Export Keys</button>
+        ` : ''}
         <button type="button" class="btn btn-danger" data-action="delete" data-id="${sessionId}">Delete</button>
       </div>
     </div>
@@ -438,7 +517,7 @@ window.viewSession = async (sessionId) => {
   }
 };
 
-window.exportKeys = async (sessionId) => {
+async function exportKeys(sessionId) {
   const result = await electronAPI.session.exportKeys(sessionId);
   if (result.success && result.keys) {
     const keys = result.keys;
@@ -448,11 +527,79 @@ window.exportKeys = async (sessionId) => {
       `Intermediate Private Key: ${keys.intermediatePrivateKey || 'N/A'}\n` +
       `Intermediate Address: ${keys.intermediateAddress || 'N/A'}\n\n` +
       `⚠ WARNING: Keep these keys secure!`;
-    alert(text);
+    
+    // Show keys in modal
+    showExportKeysModal(sessionId, text);
   } else {
     showMessage(result.error || 'Failed to export keys', 'error');
   }
-};
+}
+
+function showExportKeysModal(sessionId, keysText) {
+  const modal = document.getElementById('export-keys-modal');
+  const sessionIdEl = document.getElementById('export-keys-session-id');
+  const contentEl = document.getElementById('export-keys-content');
+  
+  if (!modal || !sessionIdEl || !contentEl) return;
+  
+  sessionIdEl.textContent = sessionId;
+  contentEl.value = keysText;
+  modal.classList.remove('hidden');
+}
+
+function closeExportKeysModal() {
+  const modal = document.getElementById('export-keys-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+  }
+}
+
+// Export keys modal event listeners
+document.addEventListener('DOMContentLoaded', () => {
+  const closeBtn = document.getElementById('close-export-keys-modal');
+  const closeModalBtn = document.getElementById('export-keys-close-btn');
+  const copyBtn = document.getElementById('export-keys-copy-btn');
+  
+  if (closeBtn) {
+    closeBtn.addEventListener('click', closeExportKeysModal);
+  }
+  
+  if (closeModalBtn) {
+    closeModalBtn.addEventListener('click', closeExportKeysModal);
+  }
+  
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      const contentEl = document.getElementById('export-keys-content');
+      if (contentEl) {
+        try {
+          await navigator.clipboard.writeText(contentEl.value);
+          showMessage('Keys copied to clipboard!', 'success');
+        } catch (err) {
+          // Fallback: select text
+          contentEl.select();
+          contentEl.setSelectionRange(0, 99999); // For mobile devices
+          try {
+            document.execCommand('copy');
+            showMessage('Keys copied to clipboard!', 'success');
+          } catch (e) {
+            showMessage('Failed to copy. Please manually select and copy the text.', 'error');
+          }
+        }
+      }
+    });
+  }
+  
+  // Close modal on outside click
+  const modal = document.getElementById('export-keys-modal');
+  if (modal) {
+    modal.addEventListener('click', (e) => {
+      if (e.target.id === 'export-keys-modal') {
+        closeExportKeysModal();
+      }
+    });
+  }
+});
 
 window.deleteSession = async (sessionId) => {
   if (!confirm('Are you sure you want to delete this session?')) {
@@ -468,6 +615,73 @@ window.deleteSession = async (sessionId) => {
 };
 
 document.getElementById('refresh-sessions').addEventListener('click', loadSessions);
+
+// Delete All Sessions button
+const deleteAllSessionsBtn = document.getElementById('delete-all-sessions');
+if (deleteAllSessionsBtn) {
+  deleteAllSessionsBtn.addEventListener('click', async () => {
+    // Get all sessions first
+    const result = await electronAPI.session.list();
+    if (!result || !result.success || !result.sessions || result.sessions.length === 0) {
+      showMessage('No sessions to delete', 'info');
+      return;
+    }
+    
+    const sessionCount = result.sessions.length;
+    
+    // Show confirmation dialog with session count breakdown
+    const coinjoinSessions = result.sessions.filter(s => s.session && s.session.type === 'coinjoin').length;
+    const regularSessions = result.sessions.length - coinjoinSessions;
+    
+    let confirmMessage = `Are you sure you want to delete ALL ${sessionCount} session(s)?\n\n`;
+    if (coinjoinSessions > 0 && regularSessions > 0) {
+      confirmMessage += `This includes:\n- ${coinjoinSessions} coinjoin session(s)\n- ${regularSessions} regular session(s)\n\n`;
+    } else if (coinjoinSessions > 0) {
+      confirmMessage += `This includes ${coinjoinSessions} coinjoin session(s).\n\n`;
+    }
+    confirmMessage += `⚠️ WARNING: This action cannot be undone and will permanently delete all session data.\n\nDo you want to proceed?`;
+    
+    // Show confirmation dialog
+    if (!confirm(confirmMessage)) {
+      return;
+    }
+    
+    // Double confirmation for safety
+    if (!confirm(`Final confirmation: Delete ALL ${sessionCount} session(s)?\n\nThis action cannot be undone.`)) {
+      return;
+    }
+    
+    showMessage(`Deleting ${sessionCount} session(s)...`, 'info');
+    
+    let deleted = 0;
+    let failed = 0;
+    
+    // Delete all sessions
+    for (const { sessionId } of result.sessions) {
+      try {
+        const deleteResult = await electronAPI.session.delete(sessionId);
+        if (deleteResult.success) {
+          deleted++;
+        } else {
+          failed++;
+          console.error(`[Delete All] Failed to delete ${sessionId}:`, deleteResult.error);
+        }
+      } catch (err) {
+        failed++;
+        console.error(`[Delete All] Error deleting ${sessionId}:`, err);
+      }
+    }
+    
+    if (deleted > 0) {
+      showMessage(`Successfully deleted ${deleted} of ${sessionCount} session(s)${failed > 0 ? ` (${failed} failed)` : ''}`, deleted === sessionCount ? 'success' : 'warning');
+    } else {
+      showMessage(`Failed to delete any sessions. ${failed} error(s) occurred.`, 'error');
+    }
+    
+    // Reload sessions to show updated list
+    loadSessions();
+  });
+}
 
 // Event delegation for session action buttons (more robust with CSP/contextIsolation)
 const sessionsListEl = document.getElementById('sessions-list');
@@ -486,19 +700,7 @@ if (sessionsListEl) {
         showMessage(result.error, 'error');
       }
     } else if (action === 'export-keys') {
-      const result = await electronAPI.session.exportKeys(sessionId);
-      if (result.success && result.keys) {
-        const keys = result.keys;
-        const text = `Private Keys for Session ${sessionId}:\n\n` +
-          `Deposit Private Key: ${keys.depositPrivateKey || 'N/A'}\n` +
-          `Deposit Address: ${keys.depositAddress}\n\n` +
-          `Intermediate Private Key: ${keys.intermediatePrivateKey || 'N/A'}\n` +
-          `Intermediate Address: ${keys.intermediateAddress || 'N/A'}\n\n` +
-          `⚠ WARNING: Keep these keys secure!`;
-        alert(text);
-      } else {
-        showMessage(result.error || 'Failed to export keys', 'error');
-      }
+      exportKeys(sessionId);
     } else if (action === 'delete') {
       if (!confirm('Are you sure you want to delete this session?')) return;
       const result = await electronAPI.session.delete(sessionId);
@@ -817,7 +1019,7 @@ async function loadTransactionHistory(reset = false) {
         const txIdShort = tx.txId ? tx.txId.substring(0, 16) + '...' : 'N/A';
         
         return `
-          <div class="transaction-item ${tx.type}" onclick="copyToClipboard('${tx.txId || ''}')">
+          <div class="transaction-item ${tx.type} transaction-item-copyable" data-tx-id="${escapeHtml(tx.txId || '')}">
             <div class="transaction-item-header">
               <span class="transaction-type ${tx.type}">${tx.type === 'received' ? 'Received' : 'Sent'}</span>
               <span class="transaction-amount ${tx.type}">${tx.type === 'received' ? '+' : '-'}${amountStr} KAS</span>
@@ -832,6 +1034,16 @@ async function loadTransactionHistory(reset = false) {
           </div>
         `;
       }).join('');
+      
+      // Attach event listeners to transaction items for copy functionality
+      listEl.querySelectorAll('.transaction-item-copyable').forEach(item => {
+        item.addEventListener('click', () => {
+          const txId = item.getAttribute('data-tx-id');
+          if (txId) {
+            copyToClipboard(txId);
+          }
+        });
+      });
       
       // Update pagination
       const paginationEl = document.getElementById('transaction-history-pagination');
@@ -855,7 +1067,7 @@ async function loadTransactionHistory(reset = false) {
 }
 
 // Helper function to copy to clipboard
-window.copyToClipboard = async (text) => {
+async function copyToClipboard(text) {
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
@@ -1612,7 +1824,7 @@ function createPortBadge(label, port, active, tooltip) {
 
 // Listen for node status updates (handled below after modal setup)
 
-// Format bytes to human readable
+// Formatting utilities (from utils/formatting.js)
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -1621,7 +1833,6 @@ function formatBytes(bytes) {
   return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
 }
 
-// Format time duration
 function formatDuration(ms) {
   if (!ms) return 'N/A';
   const seconds = Math.floor(ms / 1000);
@@ -1632,7 +1843,6 @@ function formatDuration(ms) {
   return `${seconds}s`;
 }
 
-// Format large numbers
 function formatNumber(num) {
   if (num === null || num === undefined) return 'N/A';
   if (num >= 1e12) return (num / 1e12).toFixed(2) + 'T';
@@ -1642,13 +1852,11 @@ function formatNumber(num) {
   return num.toString();
 }
 
-// Format numbers with thousand separators (for displaying full numbers)
 function formatNumberWithSeparators(num) {
   if (num === null || num === undefined) return 'N/A';
   return Number(num).toLocaleString('en-US');
 }
 
-// Format numbers with more precision (for showing small changes)
 function formatNumberPrecise(num, precision = 3) {
   if (num === null || num === undefined) return 'N/A';
   if (num >= 1e12) return (num / 1e12).toFixed(precision) + 'T';
@@ -1658,6 +1866,2452 @@ function formatNumberPrecise(num, precision = 3) {
   return num.toString();
 }
 
+// ============================================
+// Coinjoin UI Functions
+// ============================================
+
+// Coinjoin UI Functions
+document.addEventListener('DOMContentLoaded', () => {
+  // Create zero-trust coinjoin button
+  document.getElementById('create-zerotrust-coinjoin')?.addEventListener('click', () => {
+    openCoinjoinCreateModal('zero-trust');
+  });
+  
+  // Coinjoin create modal functions
+  function openCoinjoinCreateModal(mode) {
+    const modal = document.getElementById('coinjoin-create-modal');
+    const title = document.getElementById('coinjoin-modal-title');
+    const form = document.getElementById('coinjoin-create-form');
+    
+    if (!modal || !title || !form) return;
+    
+    // Reset form
+    form.reset();
+    
+    const zeroTrustFields = document.getElementById('coinjoin-zerotrust-fields');
+    const amountField = document.getElementById('coinjoin-amount');
+    
+    const amountHelp = document.getElementById('coinjoin-amount-help');
+    const amountZeroTrustNote = document.getElementById('coinjoin-amount-zerotrust-note');
+    
+    // Make amount field easier to edit - select all text on focus
+    if (amountField) {
+      // Select all text on focus for easy editing
+      amountField.addEventListener('focus', function() {
+        this.select();
+      });
+      
+      // Also allow click to select all
+      amountField.addEventListener('click', function() {
+        this.select();
+      });
+    }
+    
+    // Always use zero-trust mode
+    title.textContent = 'Create Zero-Trust Coinjoin Session';
+    if (zeroTrustFields) zeroTrustFields.style.display = 'block';
+    if (amountField) amountField.required = false;
+    document.getElementById('coinjoin-utxos').required = true;
+    if (amountHelp) amountHelp.style.display = 'none';
+    if (amountZeroTrustNote) amountZeroTrustNote.style.display = 'block';
+    
+    // Initialize zero-trust helpers
+    initializeZeroTrustHelpers();
+    
+    modal.classList.remove('hidden');
+  }
+  
+  // UTXO selection algorithm: selects UTXOs that total approximately the target amount
+  // Expose globally so it can be used in form submission
+  window.selectUtxosForAmount = (utxos, targetAmountSompi) => {
+    if (!targetAmountSompi || targetAmountSompi <= 0n) {
+      // No target amount specified, return all UTXOs
+      return utxos;
+    }
+    
+    // Sort UTXOs by amount (smallest first) for better selection
+    const sortedUtxos = [...utxos].sort((a, b) => {
+      const aAmount = BigInt(String(a.amount || '0'));
+      const bAmount = BigInt(String(b.amount || '0'));
+      return aAmount < bAmount ? -1 : (aAmount > bAmount ? 1 : 0);
+    });
+    
+    // CRITICAL: No tolerance - must match EXACTLY for CoinJoin fairness
+    // CoinJoin requires exact input amounts, so we only accept exact matches
+    const minAmount = targetAmountSompi;
+    const maxAmount = targetAmountSompi;
+    
+    // Try to find a combination that matches the target amount
+    // First, try to find a single UTXO that matches
+    for (const utxo of sortedUtxos) {
+      const amount = BigInt(String(utxo.amount || '0'));
+      if (amount >= minAmount && amount <= maxAmount) {
+        return [utxo];
+      }
+    }
+    
+    // If no single UTXO matches, use greedy algorithm to select smallest UTXOs until we reach target
+    const selected = [];
+    let total = 0n;
+    
+    for (const utxo of sortedUtxos) {
+      const amount = BigInt(String(utxo.amount || '0'));
+      if (total + amount <= maxAmount) {
+        selected.push(utxo);
+        total += amount;
+        if (total >= minAmount) {
+          // We've reached the target range
+          break;
+        }
+      }
+    }
+    
+    // If we couldn't reach the minimum, try to get as close as possible
+    if (total < minAmount && sortedUtxos.length > 0) {
+      // Add the smallest UTXO that gets us closest to target
+      for (const utxo of sortedUtxos) {
+        if (!selected.find(s => s.transactionId === utxo.transactionId && s.index === utxo.index)) {
+          const amount = BigInt(String(utxo.amount || '0'));
+          if (total + amount <= targetAmountSompi) {
+            selected.push(utxo);
+            total += amount;
+            break;
+          }
+        }
+      }
+    }
+    
+    // If still no UTXOs selected or total is too low, return empty array
+    // This ensures we don't accidentally use all UTXOs when they don't match the target
+    // The calling code should handle this by creating a new matching UTXO
+    if (selected.length === 0 || total < minAmount) {
+      console.warn(`[Coinjoin] Could not select UTXOs for target ${(Number(targetAmountSompi) / 1e8).toFixed(8)} KAS. Available: ${utxos.length} UTXOs. Returning empty selection - UTXO creation should be triggered.`);
+      return []; // Return empty - don't use all UTXOs
+    }
+    
+    return selected;
+  };
+  
+  // Initialize zero-trust helper functions
+  function initializeZeroTrustHelpers() {
+    // Manual section toggle
+    const manualToggle = document.getElementById('zerotrust-manual-toggle');
+    const manualSection = document.getElementById('zerotrust-manual-section');
+    if (manualToggle && manualSection) {
+      manualToggle.addEventListener('click', () => {
+        const isVisible = manualSection.style.display !== 'none';
+        manualSection.style.display = isVisible ? 'none' : 'block';
+        manualToggle.textContent = isVisible ? '📝 Or enter UTXOs manually' : '✖️ Hide manual entry';
+      });
+    }
+    
+    // Help toggle (legacy - may not exist anymore)
+    const helpToggle = document.getElementById('zerotrust-help-toggle');
+    const helpContent = document.getElementById('zerotrust-help-content');
+    if (helpToggle && helpContent) {
+      helpToggle.addEventListener('click', () => {
+        const isVisible = helpContent.style.display !== 'none';
+        helpContent.style.display = isVisible ? 'none' : 'block';
+        helpToggle.textContent = isVisible ? 'Show Guide' : 'Hide Guide';
+      });
+    }
+    
+    // Example template loader
+    const loadExampleBtn = document.getElementById('zerotrust-load-example');
+    const utxosTextarea = document.getElementById('coinjoin-utxos');
+    const amountInput = document.getElementById('coinjoin-amount');
+    
+    // Function to calculate and update amount from UTXOs
+    // Expose it globally so it can be called from async handlers
+    // If skipIfTargetSet is true, it won't update if amount field already has a user-specified value
+    const updateAmountFromUtxos = (skipIfTargetSet = false) => {
+      if (!utxosTextarea || !amountInput) return;
+      
+      // If skipIfTargetSet is true and amount field has a value, don't override it
+      if (skipIfTargetSet && amountInput.value.trim() && !amountInput.hasAttribute('data-auto-calculated')) {
+        return; // User has set a target amount, don't override it
+      }
+      
+      const utxosText = utxosTextarea.value.trim();
+      if (!utxosText) {
+        // Reset to default if UTXOs are cleared
+        if (amountInput.hasAttribute('data-auto-calculated')) {
+          amountInput.value = '1';
+          amountInput.removeAttribute('data-auto-calculated');
+          amountInput.style.backgroundColor = '';
+        }
+        return;
+      }
+      
+      try {
+        const utxos = JSON.parse(utxosText);
+        if (!Array.isArray(utxos) || utxos.length === 0) {
+          return;
+        }
+        
+        // Calculate total from UTXOs
+        let totalSompi = 0n;
+        for (const utxo of utxos) {
+          if (utxo.amount) {
+            try {
+              const amount = BigInt(String(utxo.amount));
+              totalSompi += amount;
+            } catch (e) {
+              // Skip invalid amounts
+            }
+          }
+        }
+        
+        if (totalSompi > 0n) {
+          // Convert to KAS and update amount field
+          const totalKAS = Number(totalSompi) / 1e8;
+          amountInput.value = totalKAS.toFixed(8);
+          amountInput.setAttribute('data-auto-calculated', 'true');
+          amountInput.style.backgroundColor = '#e8f5e9'; // Light green to indicate auto-calculated
+        }
+      } catch (err) {
+        // Invalid JSON or parsing error - ignore
+      }
+    };
+    
+    // Expose function globally for use in async handlers
+    window.updateAmountFromUtxos = updateAmountFromUtxos;
+    
+    // Listen for changes in UTXOs textarea
+    if (utxosTextarea) {
+      // Use both 'input' and 'paste' events to catch all changes
+      // Only auto-calculate if amount field doesn't have a user-specified value
+      utxosTextarea.addEventListener('input', () => {
+        // Check if amount field has a user-specified value (not auto-calculated)
+        if (amountInput && amountInput.value.trim() && !amountInput.hasAttribute('data-auto-calculated')) {
+          // User has specified an amount, don't override it
+          return;
+        }
+        updateAmountFromUtxos();
+      });
+      utxosTextarea.addEventListener('paste', () => {
+        // Delay to allow paste to complete
+        setTimeout(() => {
+          // Check if amount field has a user-specified value (not auto-calculated)
+          if (amountInput && amountInput.value.trim() && !amountInput.hasAttribute('data-auto-calculated')) {
+            // User has specified an amount, don't override it
+            return;
+          }
+          updateAmountFromUtxos();
+        }, 10);
+      });
+    }
+    
+    // Mark amount field as user-specified when user manually enters a value
+    if (amountInput) {
+      amountInput.addEventListener('input', () => {
+        // When user types in amount field, mark it as user-specified
+        if (amountInput.value.trim()) {
+          amountInput.removeAttribute('data-auto-calculated');
+          amountInput.style.backgroundColor = ''; // Remove green background
+        }
+      });
+      amountInput.addEventListener('change', () => {
+        // When amount field loses focus, mark it as user-specified if it has a value
+        if (amountInput.value.trim()) {
+          amountInput.removeAttribute('data-auto-calculated');
+          amountInput.style.backgroundColor = ''; // Remove green background
+        }
+      });
+    }
+    
+    if (loadExampleBtn && utxosTextarea) {
+      loadExampleBtn.addEventListener('click', () => {
+        const example = `[
+  {
+    "transactionId": "abc123def456...",
+    "index": 0,
+    "amount": "100000000"
+  },
+  {
+    "transactionId": "def456ghi789...",
+    "index": 1,
+    "amount": "200000000"
+  }
+]`;
+        utxosTextarea.value = example;
+        updateAmountFromUtxos(); // Calculate amount from example
+        showMessage('Example template loaded! Replace with your actual UTXO data.', 'info');
+      });
+    }
+    
+    // Fetch UTXOs from address
+    const fetchBtn = document.getElementById('zerotrust-fetch-utxos-btn');
+    const fetchSection = document.getElementById('zerotrust-fetch-section');
+    const fetchAddressInput = document.getElementById('zerotrust-fetch-address');
+    const fetchExecuteBtn = document.getElementById('zerotrust-fetch-btn');
+    const fetchCancelBtn = document.getElementById('zerotrust-fetch-cancel');
+    
+    if (fetchBtn && fetchSection) {
+      fetchBtn.addEventListener('click', () => {
+        fetchSection.style.display = fetchSection.style.display === 'none' ? 'block' : 'none';
+      });
+    }
+    
+    if (fetchCancelBtn && fetchSection) {
+      fetchCancelBtn.addEventListener('click', () => {
+        fetchSection.style.display = 'none';
+        if (fetchAddressInput) fetchAddressInput.value = '';
+      });
+    }
+    
+    // "Use My Wallet" button for destination address only
+    const destinationUseWalletBtn = document.getElementById('coinjoin-destination-use-wallet');
+    if (destinationUseWalletBtn) {
+      destinationUseWalletBtn.addEventListener('click', async () => {
+        try {
+          // Check if wallet is imported
+          const walletInfo = await electronAPI.wallet.info();
+          if (!walletInfo || !walletInfo.wallet || !walletInfo.wallet.address) {
+            showMessage('Please import your wallet first in the Wallet tab', 'warning');
+            return;
+          }
+          
+          const walletAddress = walletInfo.wallet.address;
+          const destinationInput = document.getElementById('coinjoin-destination');
+          if (destinationInput) {
+            destinationInput.value = walletAddress;
+            showMessage('Destination address filled with your wallet address', 'success');
+          }
+        } catch (err) {
+          showMessage(`Error: ${err.message}`, 'error');
+          console.error('Error getting wallet address:', err);
+        }
+      });
+    }
+    
+    // "Use My Wallet" button for UTXOs - auto-fetch UTXOs and optionally fill destination from imported wallet
+    const useWalletBtn = document.getElementById('zerotrust-fetch-wallet-btn');
+    if (useWalletBtn && utxosTextarea) {
+      useWalletBtn.addEventListener('click', async () => {
+        try {
+          // Check if wallet is imported
+          const walletInfo = await electronAPI.wallet.info();
+          if (!walletInfo) {
+            showMessage('Please import your wallet first in the Wallet tab', 'warning');
+            return;
+          }
+          
+          // Handle different wallet info structures
+          let walletAddress = null;
+          if (walletInfo.wallet && walletInfo.wallet.address) {
+            walletAddress = walletInfo.wallet.address;
+          } else if (walletInfo.address) {
+            walletAddress = walletInfo.address;
+          } else {
+            showMessage('Wallet address not found. Please re-import your wallet.', 'error');
+            console.error('[Coinjoin] Wallet info structure:', walletInfo);
+            return;
+          }
+          
+          if (!walletAddress || typeof walletAddress !== 'string' || walletAddress.trim() === '') {
+            showMessage('Invalid wallet address. Please re-import your wallet.', 'error');
+            console.error('[Coinjoin] Invalid wallet address:', walletAddress);
+            return;
+          }
+          
+          // Get all existing coinjoin sessions to exclude their UTXOs
+          // This ensures each session gets a fresh UTXO even if using the same address
+          // CRITICAL: Always exclude UTXOs from ALL previous sessions (including completed ones)
+          // This ensures we never reuse UTXOs, even from old sessions
+          let excludeUtxos = [];
+          try {
+            const allSessions = await electronAPI.coinjoin.list();
+            for (const { session } of allSessions) {
+              if (session.zeroTrustMode) {
+                // Get UTXOs from all sources (revealed, original, committed)
+                // Include completed sessions to prevent reuse
+                const sessionUtxos = session.revealedUtxos || session.originalUtxos || [];
+                excludeUtxos.push(...sessionUtxos);
+              }
+            }
+            console.log(`[Coinjoin] Excluding ${excludeUtxos.length} UTXO(s) from all previous sessions (including completed)`);
+          } catch (err) {
+            console.warn('[Coinjoin] Could not get existing sessions for exclusion:', err);
+          }
+          
+          // Get target amount from amount field if specified
+          // CRITICAL: Parse with exact precision (same as form submission)
+          const amountInput = document.getElementById('coinjoin-amount');
+          let targetAmountSompi = null;
+          if (amountInput && amountInput.value.trim()) {
+            const amountKAS = amountInput.value.trim();
+            
+            // Validate format: must be a valid decimal number
+            if (!/^\d+(\.\d+)?$/.test(amountKAS)) {
+              showMessage('Amount must be a valid number (e.g., 1.5 or 1.50000000)', 'error');
+              return;
+            }
+            
+            // Split into integer and decimal parts
+            const parts = amountKAS.split('.');
+            const integerPart = parts[0] || '0';
+            const decimalPart = parts[1] || '';
+            
+            // Validate decimal precision (max 8 digits for sompi)
+            if (decimalPart.length > 8) {
+              showMessage(`Amount precision too high. Maximum 8 decimal places (e.g., 1.12345678 KAS). Got ${decimalPart.length} decimal places.`, 'error');
+              return;
+            }
+            
+            // Convert to sompi with exact precision (same as test script)
+            const integerSompi = BigInt(integerPart) * 100000000n;
+            const decimalSompi = BigInt((decimalPart.padEnd(8, '0').substring(0, 8)));
+            targetAmountSompi = integerSompi + decimalSompi;
+            
+            // Validate minimum amount (1 KAS = 100000000 sompi)
+            if (targetAmountSompi < 100000000n) {
+              showMessage('Amount must be at least 1 KAS', 'error');
+              return;
+            }
+            
+            const amountKASNum = Number(targetAmountSompi) / 1e8;
+            
+            // CRITICAL: Follow test script procedure exactly
+            // 1. Check if matching UTXO exists (excluding already used ones)
+            showMessage(`Checking for matching UTXO (${amountKASNum.toFixed(8)} KAS)...`, 'info');
+            const hasMatch = await electronAPI.wallet.hasMatchingUtxo(targetAmountSompi.toString(), 0, excludeUtxos); // 0 tolerance for exact match
+            
+            if (!hasMatch.success) {
+              showMessage(`Error checking UTXOs: ${hasMatch.error}`, 'error');
+              return;
+            }
+            
+            let createResult = null;
+            
+            if (hasMatch.hasMatch) {
+              // A matching UTXO exists, but we want to create a fresh one (same as test script)
+              // Force creation by calling sendFromWallet directly
+              showMessage(`Matching UTXO exists, but creating fresh UTXO to avoid reuse...`, 'info');
+              
+              // CRITICAL: Re-verify walletAddress before using it (may have been lost in scope)
+              let sendWalletAddress = walletAddress;
+              if (!sendWalletAddress || typeof sendWalletAddress !== 'string' || sendWalletAddress.trim() === '') {
+                // Re-fetch wallet address if lost
+                try {
+                  const walletInfoRetry = await electronAPI.wallet.info();
+                  if (walletInfoRetry && walletInfoRetry.wallet && walletInfoRetry.wallet.address) {
+                    sendWalletAddress = walletInfoRetry.wallet.address;
+                  } else if (walletInfoRetry && walletInfoRetry.address) {
+                    sendWalletAddress = walletInfoRetry.address;
+                  } else {
+                    showMessage('Invalid wallet address. Cannot create UTXO. Please re-import your wallet.', 'error');
+                    console.error('[Coinjoin] walletAddress is invalid and could not be retrieved:', walletAddress);
+                    return;
+                  }
+                } catch (err) {
+                  showMessage(`Failed to get wallet address: ${err.message}`, 'error');
+                  console.error('[Coinjoin] Error retrieving wallet address:', err);
+                  return;
+                }
+              }
+              
+              try {
+                showMessage(`Sending ${amountKASNum.toFixed(8)} KAS to ${sendWalletAddress} to create fresh UTXO...`, 'info');
+                
+                // Call wallet.send - preload.js wraps two arguments into { address, amountKAS } object
+                const sendResult = await electronAPI.wallet.send(sendWalletAddress, amountKASNum);
+                
+                if (!sendResult.success || !sendResult.result) {
+                  const errorMsg = sendResult.error || 'Unknown error';
+                  showMessage(`Failed to create fresh UTXO: ${errorMsg}. Please ensure you have sufficient balance (need ${amountKASNum.toFixed(8)} KAS + fees).`, 'error');
+                  console.error('[Coinjoin] Send result:', sendResult);
+                  return;
+                }
+                
+                createResult = {
+                  success: true,
+                  created: true,
+                  txId: sendResult.result.txId,
+                  alreadyInMempool: false,
+                  message: `Forced creation of fresh UTXO via transaction ${sendResult.result.txId}`
+                };
+                
+                showMessage(`✅ Fresh UTXO creation transaction submitted: ${sendResult.result.txId}`, 'success');
+              } catch (err) {
+                showMessage(`Error forcing UTXO creation: ${err.message}. Please ensure you have sufficient balance (need ${amountKASNum.toFixed(8)} KAS + fees).`, 'error');
+                return;
+              }
+            } else {
+              // No matching UTXO exists, use createMatchingUtxo normally
+              showMessage(`No matching UTXO found. Creating one by sending ${amountKASNum.toFixed(8)} KAS to yourself...`, 'info');
+              
+              createResult = await electronAPI.wallet.createMatchingUtxo(targetAmountSompi.toString(), excludeUtxos);
+              if (!createResult.success) {
+                showMessage(`Failed to create matching UTXO: ${createResult.error}. Please ensure you have sufficient balance (need ${amountKASNum.toFixed(8)} KAS + fees).`, 'error');
+                return;
+              }
+            }
+            
+            // Wait for UTXO confirmation (same as test script)
+            if (createResult && createResult.created) {
+              const message = createResult.alreadyInMempool 
+                ? `Transaction ${createResult.txId} is already in mempool. Waiting for confirmation...`
+                : `Transaction created: ${createResult.txId}. Waiting for confirmation...`;
+              showMessage(message, 'info');
+              
+              // Wait for UTXO to be confirmed (with longer timeout for larger amounts, same as test script)
+              const timeoutMs = amountKASNum >= 1.5 ? 180000 : 60000; // 3 minutes for 1.5+ KAS, 1 minute otherwise
+              const waitResult = await electronAPI.wallet.waitForUtxo(
+                targetAmountSompi.toString(), 
+                timeoutMs, 
+                3000, // Check every 3 seconds (same as test script)
+                createResult.txId,
+                excludeUtxos
+              );
+              
+              if (!waitResult.success || !waitResult.confirmed) {
+                showMessage(`UTXO creation transaction submitted but not yet confirmed. Transaction ID: ${createResult.txId}. You can try again in a moment.`, 'warning');
+                return;
+              }
+              
+              // CRITICAL: Verify exact amount (same as test script)
+              if (waitResult.utxo) {
+                console.log('[Coinjoin] waitResult.utxo:', waitResult.utxo);
+                console.log('[Coinjoin] waitResult.utxo.amount:', waitResult.utxo.amount, 'type:', typeof waitResult.utxo.amount);
+                
+                // Try multiple ways to extract the amount
+                let utxoAmount = 0n;
+                try {
+                  const amountStr = String(waitResult.utxo.amount || '0');
+                  console.log('[Coinjoin] Amount as string:', amountStr);
+                  utxoAmount = BigInt(amountStr);
+                  console.log('[Coinjoin] Amount as BigInt:', utxoAmount.toString());
+                } catch (err) {
+                  console.error('[Coinjoin] Error parsing UTXO amount:', err);
+                  console.error('[Coinjoin] Full waitResult:', JSON.stringify(waitResult, null, 2));
+                  showMessage(
+                    `ERROR: Could not parse UTXO amount. Received: ${JSON.stringify(waitResult.utxo.amount)}. ` +
+                    `Please check the console for details.`,
+                    'error'
+                  );
+                  return;
+                }
+                
+                const expectedAmount = targetAmountSompi;
+                console.log('[Coinjoin] Expected amount:', expectedAmount.toString(), 'Received:', utxoAmount.toString());
+                
+                if (utxoAmount !== expectedAmount) {
+                  const diff = utxoAmount > expectedAmount 
+                    ? (Number(utxoAmount - expectedAmount) / 1e8).toFixed(8)
+                    : (Number(expectedAmount - utxoAmount) / 1e8).toFixed(8);
+                  console.error(`[Coinjoin] Amount mismatch! Expected: ${expectedAmount.toString()}, Got: ${utxoAmount.toString()}`);
+                  showMessage(
+                    `ERROR: UTXO amount ${(Number(utxoAmount) / 1e8).toFixed(8)} KAS does NOT match expected ${(Number(expectedAmount) / 1e8).toFixed(8)} KAS (difference: ${diff} KAS). ` +
+                    `This will fail CoinJoin validation which requires exact matching. ` +
+                    `Check console for details.`,
+                    'error'
+                  );
+                  return;
+                } else {
+                  showMessage(`✅ UTXO amount verified: Exactly ${(Number(utxoAmount) / 1e8).toFixed(8)} KAS as expected`, 'success');
+                }
+              } else {
+                console.warn('[Coinjoin] waitResult.utxo is missing:', waitResult);
+                showMessage(`Warning: UTXO confirmed but amount could not be verified. Proceeding anyway...`, 'warning');
+              }
+              
+              showMessage(`✅ Matching UTXO confirmed! Now fetching and populating UTXOs...`, 'success');
+              
+              // Small delay to ensure UTXO is fully available in the network
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            } else if (createResult && !createResult.created) {
+              // createMatchingUtxo returned created: false - shouldn't happen in this flow
+              showMessage(`Matching UTXO already exists. Will use existing UTXO when fetching.`, 'info');
+            }
+          } else {
+            showMessage('Fetching UTXOs from your wallet...', 'info');
+          }
+          
+          // CRITICAL: Ensure walletAddress is still accessible (may have been lost during async operations)
+          // Re-fetch if needed before using it
+          if (!walletAddress || typeof walletAddress !== 'string' || walletAddress.trim() === '') {
+            try {
+              const walletInfoRetry = await electronAPI.wallet.info();
+              if (walletInfoRetry && walletInfoRetry.wallet && walletInfoRetry.wallet.address) {
+                walletAddress = walletInfoRetry.wallet.address;
+              } else if (walletInfoRetry && walletInfoRetry.address) {
+                walletAddress = walletInfoRetry.address;
+              } else {
+                showMessage('Failed to get wallet address. Please re-import your wallet.', 'error');
+                console.error('[Coinjoin] Could not retrieve wallet address after UTXO creation');
+                return;
+              }
+            } catch (err) {
+              showMessage(`Failed to get wallet address: ${err.message}`, 'error');
+              console.error('[Coinjoin] Error retrieving wallet address:', err);
+              return;
+            }
+          }
+          
+          // Auto-fill destination address with wallet address if not already filled
+          // (where you want to receive mixed coins)
+          const destinationInput = document.getElementById('coinjoin-destination');
+          if (destinationInput && !destinationInput.value.trim()) {
+            destinationInput.value = walletAddress;
+          }
+          
+          // If we just created a UTXO, wait a moment and re-check to ensure it's available
+          // Also re-fetch excludeUtxos in case new sessions were created
+          if (targetAmountSompi && targetAmountSompi > 0n) {
+            // Re-check excludeUtxos after potential UTXO creation
+            try {
+              const allSessions = await electronAPI.coinjoin.list();
+              excludeUtxos = [];
+              for (const { session } of allSessions) {
+                // Include ALL zero-trust sessions (including completed) to prevent UTXO reuse
+                if (session.zeroTrustMode) {
+                  const sessionUtxos = session.revealedUtxos || session.originalUtxos || [];
+                  excludeUtxos.push(...sessionUtxos);
+                }
+              }
+              console.log(`[Coinjoin] Updated exclusion list: ${excludeUtxos.length} UTXO(s) from all sessions (including completed)`);
+            } catch (err) {
+              console.warn('[Coinjoin] Could not refresh existing sessions for exclusion:', err);
+            }
+          }
+          
+          // Fetch UTXOs (this happens after UTXO creation/confirmation)
+          // CRITICAL: This MUST execute after UTXO confirmation to populate the form
+          showMessage(`Fetching UTXOs from ${walletAddress}...`, 'info');
+          
+          // Preload.js expects address as argument, wraps it as { address }
+          const utxos = await electronAPI.wallet.getUtxos(walletAddress);
+          
+          console.log('[Coinjoin] Raw UTXOs received from wallet:', utxos);
+          console.log('[Coinjoin] UTXOs type:', typeof utxos);
+          console.log('[Coinjoin] UTXOs is array:', Array.isArray(utxos));
+          
+          // Handle different response formats - IPC handler returns array directly
+          let utxosArray = null;
+          if (Array.isArray(utxos)) {
+            utxosArray = utxos;
+          } else if (utxos && utxos.entries && Array.isArray(utxos.entries)) {
+            utxosArray = utxos.entries;
+          } else if (utxos && utxos.success && utxos.entries) {
+            utxosArray = utxos.entries;
+          } else if (utxos && utxos.success && Array.isArray(utxos.utxos)) {
+            utxosArray = utxos.utxos;
+          } else {
+            console.error('[Coinjoin] Unexpected UTXO response format:', utxos);
+            showMessage('Unexpected response format from wallet. Please try again.', 'error');
+            return;
+          }
+          
+          if (!utxosArray || utxosArray.length === 0) {
+            showMessage('No UTXOs found in your wallet. Make sure your wallet has received funds and the UTXO is confirmed. You may need to wait a moment for the newly created UTXO to appear.', 'warning');
+            console.error('[Coinjoin] No UTXOs found. Raw response:', utxos);
+            return;
+          }
+          
+          console.log(`[Coinjoin] Processing ${utxosArray.length} UTXO(s)`);
+          
+          // Format UTXOs for coinjoin (same formatting logic)
+          const formattedUtxos = utxosArray.map((utxo, idx) => {
+            const txId = utxo.outpoint?.transactionId || 
+                        utxo.entry?.outpoint?.transactionId ||
+                        utxo.transactionId || 
+                        utxo.txId || '';
+            
+            const index = utxo.outpoint?.index !== undefined 
+                        ? utxo.outpoint.index 
+                        : (utxo.entry?.outpoint?.index !== undefined
+                            ? utxo.entry.outpoint.index
+                            : (utxo.index !== undefined 
+                                ? utxo.index 
+                                : (utxo.outputIndex !== undefined 
+                                    ? utxo.outputIndex 
+                                    : 0)));
+            
+            let amount = '0';
+            if (utxo.amount !== undefined && utxo.amount !== null) {
+              amount = typeof utxo.amount === 'bigint' ? utxo.amount.toString() : String(utxo.amount);
+            } else if (utxo.entry && utxo.entry.amount !== undefined && utxo.entry.amount !== null) {
+              amount = typeof utxo.entry.amount === 'bigint' ? utxo.entry.amount.toString() : String(utxo.entry.amount);
+            } else if (utxo.value !== undefined && utxo.value !== null) {
+              amount = typeof utxo.value === 'bigint' ? utxo.value.toString() : String(utxo.value);
+            }
+            
+            return {
+              transactionId: txId,
+              index: index,
+              amount: amount
+            };
+          }).filter(utxo => {
+            const hasTxId = utxo.transactionId && utxo.transactionId.length > 0;
+            const hasAmount = utxo.amount && utxo.amount !== '0' && utxo.amount !== '0n';
+            let amountBigInt = 0n;
+            try {
+              amountBigInt = BigInt(utxo.amount || '0');
+            } catch (e) {
+              return false;
+            }
+            return hasTxId && hasAmount && amountBigInt > 0n;
+          });
+          
+          if (formattedUtxos.length === 0) {
+            showMessage('No valid UTXOs found in your wallet. UTXOs must have a transaction ID and non-zero amount.', 'warning');
+            return;
+          }
+          
+          // Capture original target amount before any potential changes
+          const originalTargetAmountSompi = targetAmountSompi;
+          const originalTargetKAS = originalTargetAmountSompi ? Number(originalTargetAmountSompi) / 1e8 : null;
+          
+          // Filter out UTXOs that are already used in other sessions
+          // This ensures each session gets a unique UTXO even if using the same address
+          let availableUtxos = formattedUtxos;
+          if (excludeUtxos && excludeUtxos.length > 0) {
+            const excludedKeys = new Set();
+            for (const excludedUtxo of excludeUtxos) {
+              const txId = excludedUtxo.transactionId || excludedUtxo.txId || '';
+              const index = excludedUtxo.index !== undefined ? excludedUtxo.index : 
+                            (excludedUtxo.outputIndex !== undefined ? excludedUtxo.outputIndex : 0);
+              excludedKeys.add(`${txId}:${index}`);
+            }
+            
+            availableUtxos = formattedUtxos.filter(utxo => {
+              const key = `${utxo.transactionId}:${utxo.index}`;
+              return !excludedKeys.has(key);
+            });
+            
+            if (availableUtxos.length < formattedUtxos.length) {
+              console.log(`[Coinjoin] Filtered out ${formattedUtxos.length - availableUtxos.length} UTXO(s) already used in other sessions`);
+            }
+          }
+          
+          // Select UTXOs based on target amount if specified
+          // IMPORTANT: When target amount is specified, we MUST only use UTXOs that match the target
+          // This ensures each session commits to the correct amount
+          let selectedUtxos = availableUtxos;
+          if (targetAmountSompi && targetAmountSompi > 0n) {
+            selectedUtxos = window.selectUtxosForAmount(availableUtxos, targetAmountSompi);
+            
+            const selectedTotal = selectedUtxos.reduce((sum, utxo) => sum + BigInt(String(utxo.amount || '0')), 0n);
+            const selectedKAS = Number(selectedTotal) / 1e8;
+            const targetKAS = originalTargetKAS || (Number(targetAmountSompi) / 1e8);
+            
+            // CRITICAL: Validate that selected UTXOs match EXACTLY - no tolerance
+            // CoinJoin requires exact input amounts for fairness and security
+            if (selectedTotal !== targetAmountSompi) {
+              const difference = selectedTotal > targetAmountSompi 
+                ? selectedTotal - targetAmountSompi 
+                : targetAmountSompi - selectedTotal;
+              const diffKAS = (Number(difference) / 1e8).toFixed(8);
+              
+              showMessage(
+                `ERROR: Selected UTXOs (${selectedKAS.toFixed(8)} KAS) don't match target (${targetKAS.toFixed(8)} KAS) exactly. ` +
+                `Difference: ${diffKAS} KAS. ` +
+                `CoinJoin requires EXACT amount matching. Please try again or create a new UTXO with the exact amount.`,
+                'error'
+              );
+              return;
+            }
+            
+            if (selectedUtxos.length === 0) {
+              // No matching UTXOs found after filtering
+              // This can happen if:
+              // 1. The matching UTXO was just created and not yet confirmed
+              // 2. The matching UTXO is locked by a pending transaction
+              // 3. All matching UTXOs are already committed to other sessions
+              showMessage(`No available UTXOs matching ${targetKAS.toFixed(8)} KAS. Attempting to create a new UTXO...`, 'warning');
+              
+              // Try creating a matching UTXO
+              // Note: createMatchingUtxo handles retries for locked UTXOs automatically
+              const createResult = await electronAPI.wallet.createMatchingUtxo(targetAmountSompi.toString(), excludeUtxos);
+              if (!createResult.success) {
+                // Check if error is due to locked UTXO - if so, wait and retry
+                if (createResult.error && (createResult.error.includes('locked') || createResult.error.includes('mempool'))) {
+                  showMessage(`UTXO is locked by pending transaction. Waiting for confirmation... Please try again in a moment.`, 'warning');
+                  return;
+                }
+                // Check if the error is "already exists" - in this case, we should use the existing UTXO
+                if (createResult.error && createResult.error.includes('already exists')) {
+                  showMessage(`Matching UTXO already exists. Will use existing UTXO when fetching.`, 'info');
+                  // Continue to fetch UTXOs below - the matching one will be selected
+                } else {
+                  showMessage(`Failed to create matching UTXO: ${createResult.error}. Please try again in a moment.`, 'error');
+                  return;
+                }
+              } else if (createResult.created || createResult.alreadyInMempool) {
+                // UTXO creation transaction submitted (or already in mempool)
+                // Wait for it to be confirmed before proceeding
+                showMessage(`UTXO creation transaction submitted. Waiting for confirmation...`, 'info');
+                
+                // Wait for the specific UTXO from the transaction we just created
+                const waitResult = await electronAPI.wallet.waitForUtxo(
+                  targetAmountSompi.toString(), 
+                  60000, 
+                  2000,
+                  createResult.txId, // Pass transaction ID to track the specific UTXO
+                  excludeUtxos       // Pass excludeUtxos to avoid matching old UTXOs
+                );
+                if (!waitResult.success || !waitResult.confirmed) {
+                  showMessage(`UTXO creation in progress. Please wait a moment and click "Use My Wallet" again.`, 'info');
+                  return;
+                }
+                
+                // UTXO confirmed, now we need to refetch UTXOs and try selection again
+                // Update excludeUtxos to include the newly created UTXO's transaction (if it's from a different tx)
+                try {
+                  const allSessions = await electronAPI.coinjoin.list();
+                  excludeUtxos = [];
+                  for (const { session } of allSessions) {
+                    // Include ALL zero-trust sessions (including completed) to prevent UTXO reuse
+                    if (session.zeroTrustMode) {
+                      const sessionUtxos = session.revealedUtxos || session.originalUtxos || [];
+                      excludeUtxos.push(...sessionUtxos);
+                    }
+                  }
+                  console.log(`[Coinjoin] Updated exclusion list after UTXO creation: ${excludeUtxos.length} UTXO(s) from all sessions (including completed)`);
+                } catch (err) {
+                  console.warn('[Coinjoin] Could not refresh exclusion list:', err);
+                }
+                
+                // Refetch UTXOs now that new one is confirmed and re-run selection
+                showMessage(`New UTXO confirmed! Refetching UTXOs...`, 'success');
+                
+                // Refetch UTXOs
+                const refreshedUtxos = await electronAPI.wallet.getUtxos(walletAddress);
+                if (!refreshedUtxos || refreshedUtxos.length === 0) {
+                  showMessage('No UTXOs found after refresh. Please try again.', 'error');
+                  return;
+                }
+                
+                // Format refreshed UTXOs
+                const refreshedFormattedUtxos = refreshedUtxos.map((utxo, idx) => {
+                  const txId = utxo.outpoint?.transactionId || 
+                              utxo.entry?.outpoint?.transactionId ||
+                              utxo.transactionId || 
+                              utxo.txId || '';
+                  
+                  const index = utxo.outpoint?.index !== undefined 
+                              ? utxo.outpoint.index 
+                              : (utxo.entry?.outpoint?.index !== undefined
+                                  ? utxo.entry.outpoint.index
+                                  : (utxo.index !== undefined 
+                                      ? utxo.index 
+                                      : (utxo.outputIndex !== undefined 
+                                          ? utxo.outputIndex 
+                                          : 0)));
+                  
+                  let amount = '0';
+                  if (utxo.amount !== undefined && utxo.amount !== null) {
+                    amount = typeof utxo.amount === 'bigint' ? utxo.amount.toString() : String(utxo.amount);
+                  } else if (utxo.entry && utxo.entry.amount !== undefined && utxo.entry.amount !== null) {
+                    amount = typeof utxo.entry.amount === 'bigint' ? utxo.entry.amount.toString() : String(utxo.entry.amount);
+                  } else if (utxo.value !== undefined && utxo.value !== null) {
+                    amount = typeof utxo.value === 'bigint' ? utxo.value.toString() : String(utxo.value);
+                  }
+                  
+                  return {
+                    transactionId: txId,
+                    index: index,
+                    amount: amount
+                  };
+                }).filter(utxo => {
+                  const hasTxId = utxo.transactionId && utxo.transactionId.length > 0;
+                  const hasAmount = utxo.amount && utxo.amount !== '0' && utxo.amount !== '0n';
+                  let amountBigInt = 0n;
+                  try {
+                    amountBigInt = BigInt(utxo.amount || '0');
+                  } catch (e) {
+                    return false;
+                  }
+                  return hasTxId && hasAmount && amountBigInt > 0n;
+                });
+                
+                // Filter out excluded UTXOs
+                let refreshedAvailableUtxos = refreshedFormattedUtxos;
+                if (excludeUtxos && excludeUtxos.length > 0) {
+                  const excludedKeys = new Set();
+                  for (const excludedUtxo of excludeUtxos) {
+                    const txId = excludedUtxo.transactionId || excludedUtxo.txId || '';
+                    const index = excludedUtxo.index !== undefined ? excludedUtxo.index : 
+                                (excludedUtxo.outputIndex !== undefined ? excludedUtxo.outputIndex : 0);
+                    excludedKeys.add(`${txId}:${index}`);
+                  }
+                  
+                  refreshedAvailableUtxos = refreshedFormattedUtxos.filter(utxo => {
+                    const key = `${utxo.transactionId}:${utxo.index}`;
+                    return !excludedKeys.has(key);
+                  });
+                }
+                
+                // Re-run selection on refreshed UTXOs
+                selectedUtxos = window.selectUtxosForAmount(refreshedAvailableUtxos, targetAmountSompi);
+                
+                if (selectedUtxos.length === 0) {
+                  showMessage(`UTXO was created but not yet available. Please wait a moment and try again.`, 'warning');
+                  return;
+                }
+                
+                // Update selectedTotal and selectedKAS for the refreshed selection
+                const refreshedSelectedTotal = selectedUtxos.reduce((sum, utxo) => sum + BigInt(String(utxo.amount || '0')), 0n);
+                const refreshedSelectedKAS = Number(refreshedSelectedTotal) / 1e8;
+                showMessage(`Selected ${selectedUtxos.length} UTXO(s) totaling ${refreshedSelectedKAS.toFixed(8)} KAS (target: ${targetKAS.toFixed(8)} KAS)`, 'success');
+                
+                // Continue to populate form below
+              } else {
+                showMessage(`Could not find or create matching UTXO. Please try again.`, 'error');
+                return;
+              }
+            }
+            
+            // If we still don't have selected UTXOs at this point, something went wrong
+            if (selectedUtxos.length === 0) {
+              showMessage(`Could not select UTXOs for ${targetKAS.toFixed(8)} KAS. Please try again or manually select UTXOs.`, 'error');
+              return;
+            }
+            
+            if (selectedUtxos.length < availableUtxos.length) {
+              console.log(`[Coinjoin] Selected ${selectedUtxos.length} UTXO(s) totaling ${selectedKAS.toFixed(8)} KAS for target ${targetKAS.toFixed(8)} KAS`);
+              showMessage(`Selected ${selectedUtxos.length} UTXO(s) totaling ${selectedKAS.toFixed(8)} KAS (target: ${targetKAS.toFixed(8)} KAS)`, 'success');
+            } else if (selectedUtxos.length === availableUtxos.length && availableUtxos.length > 1) {
+              // If we're using all available UTXOs but there are multiple, warn
+              showMessage(`Warning: Using all ${selectedUtxos.length} available UTXO(s) totaling ${selectedKAS.toFixed(8)} KAS. This may not match the target amount for other participants.`, 'warning');
+            }
+          } else {
+            // No target amount - but still warn if using all UTXOs
+            const totalKAS = selectedUtxos.reduce((sum, utxo) => sum + BigInt(String(utxo.amount || '0')), 0n);
+            console.log(`[Coinjoin] No target amount specified, using all ${selectedUtxos.length} UTXO(s) totaling ${(Number(totalKAS) / 1e8).toFixed(8)} KAS`);
+          }
+          
+          // CRITICAL: Populate the form with selected UTXOs (same as test script flow)
+          console.log(`[Coinjoin] Populating form with ${selectedUtxos.length} UTXO(s)`);
+          utxosTextarea.value = JSON.stringify(selectedUtxos, null, 2);
+          
+          // Only update amount from UTXOs if no target amount was specified
+          // If target amount was specified, keep it (don't override with actual UTXO total)
+          // Also temporarily mark the amount field to prevent auto-calculation from textarea input event
+          if (window.updateAmountFromUtxos) {
+            if (originalTargetAmountSompi && originalTargetAmountSompi > 0n) {
+              // Don't update amount - keep the user's target amount
+              // Ensure amount field shows the target (not the actual UTXO total)
+              if (amountInput) {
+                amountInput.value = originalTargetKAS.toFixed(8);
+                amountInput.removeAttribute('data-auto-calculated');
+                amountInput.style.backgroundColor = '';
+              }
+            } else {
+              // No target amount specified, calculate from UTXOs
+              window.updateAmountFromUtxos();
+            }
+          }
+          
+          // Final success message
+          if (targetAmountSompi && targetAmountSompi > 0n) {
+            const selectedTotal = selectedUtxos.reduce((sum, utxo) => sum + BigInt(String(utxo.amount || '0')), 0n);
+            const selectedKAS = Number(selectedTotal) / 1e8;
+            showMessage(
+              `✅ Successfully prepared ${selectedUtxos.length} UTXO(s) totaling ${selectedKAS.toFixed(8)} KAS. ` +
+              `You can now create your CoinJoin session.`,
+              'success'
+            );
+          } else {
+            showMessage(`✅ Found ${selectedUtxos.length} UTXO(s) from your wallet! Form populated and ready.`, 'success');
+          }
+        } catch (err) {
+          showMessage(`Error fetching UTXOs from wallet: ${err.message}`, 'error');
+          console.error('Error fetching UTXOs from wallet:', err);
+        }
+      });
+    }
+    
+    // Fetch UTXOs from address (manual entry)
+    if (fetchExecuteBtn && fetchAddressInput && utxosTextarea) {
+      fetchExecuteBtn.addEventListener('click', async () => {
+        const address = fetchAddressInput.value.trim();
+        if (!address) {
+          showMessage('Please enter an address', 'error');
+          return;
+        }
+        
+        // Validate address format
+        if (!address.startsWith('kaspa:')) {
+          showMessage('Address must start with "kaspa:"', 'error');
+          return;
+        }
+        
+        try {
+          showMessage('Fetching UTXOs from address...', 'info');
+          const utxos = await electronAPI.wallet.getUtxos(address);
+          
+          console.log('[Coinjoin] Raw UTXOs received:', utxos);
+          console.log('[Coinjoin] UTXOs count:', utxos ? utxos.length : 0);
+          
+          if (!utxos || utxos.length === 0) {
+            showMessage('No UTXOs found at this address. Make sure the address has received funds.', 'warning');
+            return;
+          }
+          
+          // Format UTXOs for coinjoin (same formatting logic as wallet fetch)
+          const formattedUtxos = utxos.map((utxo, idx) => {
+            const txId = utxo.outpoint?.transactionId || 
+                        utxo.entry?.outpoint?.transactionId ||
+                        utxo.transactionId || 
+                        utxo.txId || '';
+            
+            const index = utxo.outpoint?.index !== undefined 
+                        ? utxo.outpoint.index 
+                        : (utxo.entry?.outpoint?.index !== undefined
+                            ? utxo.entry.outpoint.index
+                            : (utxo.index !== undefined 
+                                ? utxo.index 
+                                : (utxo.outputIndex !== undefined 
+                                    ? utxo.outputIndex 
+                                    : 0)));
+            
+            let amount = '0';
+            if (utxo.amount !== undefined && utxo.amount !== null) {
+              amount = typeof utxo.amount === 'bigint' ? utxo.amount.toString() : String(utxo.amount);
+            } else if (utxo.entry && utxo.entry.amount !== undefined && utxo.entry.amount !== null) {
+              amount = typeof utxo.entry.amount === 'bigint' ? utxo.entry.amount.toString() : String(utxo.entry.amount);
+            } else if (utxo.value !== undefined && utxo.value !== null) {
+              amount = typeof utxo.value === 'bigint' ? utxo.value.toString() : String(utxo.value);
+            }
+            
+            return {
+              transactionId: txId,
+              index: index,
+              amount: amount
+            };
+          }).filter(utxo => {
+            const hasTxId = utxo.transactionId && utxo.transactionId.length > 0;
+            const hasAmount = utxo.amount && utxo.amount !== '0' && utxo.amount !== '0n';
+            let amountBigInt = 0n;
+            try {
+              amountBigInt = BigInt(utxo.amount || '0');
+            } catch (e) {
+              return false;
+            }
+            return hasTxId && hasAmount && amountBigInt > 0n;
+          });
+          
+          if (formattedUtxos.length === 0) {
+            showMessage('No valid UTXOs found at this address. UTXOs must have a transaction ID and non-zero amount.', 'warning');
+            return;
+          }
+          
+          utxosTextarea.value = JSON.stringify(formattedUtxos, null, 2);
+          // Calculate and update amount from fetched UTXOs
+          if (window.updateAmountFromUtxos) {
+            window.updateAmountFromUtxos();
+          }
+          fetchSection.style.display = 'none';
+          showMessage(`Found ${formattedUtxos.length} UTXO(s) and loaded into form!`, 'success');
+        } catch (err) {
+          console.error('Error fetching UTXOs:', err);
+          const errorMsg = err.message || err.toString() || 'Unknown error';
+          showMessage(`Error fetching UTXOs: ${errorMsg}`, 'error');
+        }
+      });
+    }
+  }
+  
+  function closeCoinjoinModal() {
+    const modal = document.getElementById('coinjoin-create-modal');
+    if (modal) {
+      modal.classList.add('hidden');
+      document.getElementById('coinjoin-create-form').reset();
+    }
+  }
+  
+  // Close modal buttons
+  document.getElementById('close-coinjoin-modal')?.addEventListener('click', closeCoinjoinModal);
+  document.getElementById('coinjoin-modal-cancel')?.addEventListener('click', closeCoinjoinModal);
+  
+  // Handle form submission
+  document.getElementById('coinjoin-create-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const destination = document.getElementById('coinjoin-destination').value.trim();
+    const amountInput = document.getElementById('coinjoin-amount').value.trim();
+    const poolAddress = document.getElementById('coinjoin-pool-address').value.trim();
+    const poolKey = document.getElementById('coinjoin-pool-key').value.trim();
+    const utxosInput = document.getElementById('coinjoin-utxos').value.trim();
+    
+    if (!destination) {
+      showMessage('Destination address is required', 'error');
+      return;
+    }
+    
+    // Check if trusted fields are visible (trusted mode)
+    const trustedFields = document.getElementById('coinjoin-trusted-fields');
+    const zeroTrustFields = document.getElementById('coinjoin-zerotrust-fields');
+    const isZeroTrustMode = trustedFields.style.display === 'none';
+    
+    let amountSompi = null;
+    let userUtxos = null;
+    
+    if (isZeroTrustMode) {
+      // Zero-trust mode: require UTXOs and amount
+      if (!utxosInput) {
+        showMessage('UTXOs are required for zero-trust mode', 'error');
+        return;
+      }
+      
+      // Validate amount is specified
+      if (!amountInput) {
+        showMessage('Amount is required for zero-trust mode', 'error');
+        return;
+      }
+      
+      // CRITICAL: Parse amount with exact precision - no rounding
+      // Convert KAS string to sompi (smallest unit) with exact precision
+      // Example: "1.5" KAS = 150000000 sompi (exact, no rounding)
+      const amountKAS = amountInput.trim();
+      
+      // Validate format: must be a valid decimal number
+      if (!/^\d+(\.\d+)?$/.test(amountKAS)) {
+        showMessage('Amount must be a valid number (e.g., 1.5 or 1.50000000)', 'error');
+        return;
+      }
+      
+      // Split into integer and decimal parts
+      const parts = amountKAS.split('.');
+      const integerPart = parts[0] || '0';
+      const decimalPart = parts[1] || '';
+      
+      // Validate decimal precision (max 8 digits for sompi)
+      if (decimalPart.length > 8) {
+        showMessage(`Amount precision too high. Maximum 8 decimal places (e.g., 1.12345678 KAS). Got ${decimalPart.length} decimal places.`, 'error');
+        return;
+      }
+      
+      // Convert to sompi with exact precision
+      // Integer part: * 1e8
+      // Decimal part: pad to 8 digits, then convert to integer
+      const integerSompi = BigInt(integerPart) * 100000000n;
+      const decimalSompi = BigInt((decimalPart.padEnd(8, '0').substring(0, 8)));
+      amountSompi = integerSompi + decimalSompi;
+      
+      // Validate minimum amount (1 KAS = 100000000 sompi)
+      if (amountSompi < 100000000n) {
+        showMessage('Amount must be at least 1 KAS', 'error');
+        return;
+      }
+      
+      try {
+        userUtxos = JSON.parse(utxosInput);
+        if (!Array.isArray(userUtxos) || userUtxos.length === 0) {
+          showMessage('UTXOs must be a non-empty array', 'error');
+          return;
+        }
+        
+        // Validate UTXO structure
+        for (const utxo of userUtxos) {
+          if (!utxo.transactionId && !utxo.txId) {
+            showMessage('Each UTXO must have a transactionId or txId', 'error');
+            return;
+          }
+          if (utxo.index === undefined && utxo.outputIndex === undefined) {
+            showMessage('Each UTXO must have an index or outputIndex', 'error');
+            return;
+          }
+          if (!utxo.amount) {
+            showMessage('Each UTXO must have an amount', 'error');
+            return;
+          }
+          
+          // Validate amount format
+          try {
+            BigInt(String(utxo.amount));
+          } catch (e) {
+            showMessage(`Invalid amount in UTXO: ${utxo.amount}`, 'error');
+            return;
+          }
+        }
+        
+        // Select UTXOs that match the specified amount (using same algorithm as "Use My Wallet")
+        const selectedUtxos = window.selectUtxosForAmount(userUtxos, amountSompi);
+        
+        // Calculate total from selected UTXOs
+        let selectedTotalSompi = 0n;
+        for (const utxo of selectedUtxos) {
+          selectedTotalSompi += BigInt(String(utxo.amount || '0'));
+        }
+        
+        const selectedTotalKAS = Number(selectedTotalSompi) / 1e8;
+        const targetKAS = Number(amountSompi) / 1e8;
+        
+        // CRITICAL: Enforce EXACT matching - no tolerance allowed
+        // CoinJoin requires exact input amounts for fairness and security
+        if (selectedTotalSompi !== amountSompi) {
+          const difference = selectedTotalSompi > amountSompi 
+            ? selectedTotalSompi - amountSompi 
+            : amountSompi - selectedTotalSompi;
+          const diffKAS = (Number(difference) / 1e8).toFixed(8);
+          
+          showMessage(
+            `ERROR: Selected UTXOs total ${selectedTotalKAS.toFixed(8)} KAS, but target is ${targetKAS.toFixed(8)} KAS. ` +
+            `Difference: ${diffKAS} KAS. ` +
+            `CoinJoin requires EXACT amount matching for fairness and security. ` +
+            `Please select UTXOs that total exactly ${targetKAS.toFixed(8)} KAS.`,
+            'error'
+          );
+          return; // Stop - don't proceed with mismatched amounts
+        }
+        
+        // Store original count for logging
+        const originalUtxoCount = userUtxos.length;
+        
+        // Use selected UTXOs instead of all provided UTXOs
+        userUtxos = selectedUtxos;
+        
+        // Update amount to match selected UTXOs (for accurate session creation)
+        amountSompi = selectedTotalSompi;
+        
+        console.log(`[Coinjoin] Zero-trust mode: Selected ${selectedUtxos.length} UTXO(s) totaling ${selectedTotalKAS.toFixed(8)} KAS for target ${targetKAS.toFixed(8)} KAS`);
+        
+        if (selectedUtxos.length < originalUtxoCount) {
+          console.log(`[Coinjoin] Filtered ${originalUtxoCount - selectedUtxos.length} UTXO(s) that didn't match the target amount`);
+        }
+      } catch (err) {
+        showMessage('Invalid JSON format for UTXOs: ' + err.message, 'error');
+        return;
+      }
+    } else {
+      // Trusted mode: require pool info and amount
+      if (!poolAddress) {
+        showMessage('Pool wallet address is required', 'error');
+        return;
+      }
+      if (!poolKey || poolKey.length !== 64) {
+        showMessage('Pool private key must be 64 hex characters', 'error');
+        return;
+      }
+      
+      // Validate amount
+      const amount = parseFloat(amountInput);
+      if (isNaN(amount) || amount < 1) {
+        showMessage('Amount must be at least 1 KAS', 'error');
+        return;
+      }
+      amountSompi = BigInt(Math.floor(amount * 100000000));
+    }
+    
+    try {
+      showMessage('Creating coinjoin session...', 'info');
+      const session = await electronAPI.coinjoin.create(destination, {
+        zeroTrustMode: isZeroTrustMode,
+        amount: amountSompi ? amountSompi.toString() : null,
+        userUtxos: userUtxos,
+        poolWalletAddress: poolAddress || null,
+        poolPrivateKey: poolKey || null
+      });
+      
+      if (isZeroTrustMode) {
+        showMessage(`Zero-trust coinjoin session created! Session ID: ${session.id}`, 'success');
+      } else {
+        showMessage(`Coinjoin session created! Deposit ${amountInput} KAS to: ${session.depositAddress}`, 'success');
+      }
+      closeCoinjoinModal();
+      loadCoinjoinSessions();
+      refreshCoinjoinStats();
+    } catch (err) {
+      showMessage(`Error: ${err.message}`, 'error');
+    }
+  });
+  
+  // Close modal on outside click
+  document.getElementById('coinjoin-create-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'coinjoin-create-modal') {
+      closeCoinjoinModal();
+    }
+  });
+  
+  // Refresh coinjoin button
+  document.getElementById('refresh-coinjoin')?.addEventListener('click', () => {
+    loadCoinjoinSessions();
+    refreshCoinjoinStats();
+  });
+  
+  // Coinjoin reveal modal handlers
+  document.getElementById('close-coinjoin-reveal-modal')?.addEventListener('click', closeRevealModal);
+  document.getElementById('coinjoin-reveal-modal-cancel')?.addEventListener('click', closeRevealModal);
+  
+  // One-click reveal button in modal
+  document.getElementById('coinjoin-reveal-oneclick-btn')?.addEventListener('click', async () => {
+    const form = document.getElementById('coinjoin-reveal-form');
+    const sessionId = form?.dataset.sessionId;
+    if (sessionId) {
+      await oneClickReveal(sessionId);
+    }
+  });
+  
+  // Close reveal modal on outside click
+  document.getElementById('coinjoin-reveal-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'coinjoin-reveal-modal') {
+      closeRevealModal();
+    }
+  });
+  
+  // Handle reveal form submission
+  document.getElementById('coinjoin-reveal-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const form = e.target;
+    const sessionId = form.dataset.sessionId;
+    const destination = document.getElementById('coinjoin-reveal-destination').value.trim();
+    const utxosInput = document.getElementById('coinjoin-reveal-utxos').value.trim();
+    
+    if (!sessionId) {
+      showMessage('Session ID not found', 'error');
+      return;
+    }
+    
+    if (!destination) {
+      showMessage('Destination address is required', 'error');
+      return;
+    }
+    
+    if (!utxosInput) {
+      showMessage('UTXOs are required', 'error');
+      return;
+    }
+    
+    let revealedUtxos;
+    try {
+      revealedUtxos = JSON.parse(utxosInput);
+      if (!Array.isArray(revealedUtxos) || revealedUtxos.length === 0) {
+        showMessage('UTXOs must be a non-empty array', 'error');
+        return;
+      }
+      
+      // Validate UTXO structure
+      for (const utxo of revealedUtxos) {
+        if (!utxo.transactionId && !utxo.txId) {
+          showMessage('Each UTXO must have a transactionId or txId', 'error');
+          return;
+        }
+        if (utxo.index === undefined && utxo.outputIndex === undefined) {
+          showMessage('Each UTXO must have an index or outputIndex', 'error');
+          return;
+        }
+        if (!utxo.amount) {
+          showMessage('Each UTXO must have an amount', 'error');
+          return;
+        }
+      }
+    } catch (err) {
+      showMessage('Invalid JSON format for UTXOs: ' + err.message, 'error');
+      return;
+    }
+    
+    try {
+      showMessage('Revealing UTXOs...', 'info');
+      const result = await electronAPI.coinjoin.reveal(sessionId, revealedUtxos, destination);
+      
+      if (result.success) {
+        showMessage(result.message || 'UTXOs revealed successfully! Waiting for other participants.', 'success');
+        closeRevealModal();
+        loadCoinjoinSessions();
+        refreshCoinjoinStats();
+      } else {
+        showMessage(result.error || 'Failed to reveal UTXOs', 'error');
+      }
+    } catch (err) {
+      showMessage(`Error: ${err.message}`, 'error');
+    }
+  });
+});
+
+// Load coinjoin sessions
+async function loadCoinjoinSessions() {
+  try {
+    const sessions = await electronAPI.coinjoin.list();
+    
+    // Only show zero-trust sessions
+    const zeroTrust = sessions.filter(s => s.session.zeroTrustMode);
+    
+    await renderCoinjoinSessions(zeroTrust, 'coinjoin-zerotrust-list');
+  } catch (err) {
+    showMessage(`Error loading coinjoin sessions: ${err.message}`, 'error');
+    console.error('Error loading coinjoin sessions:', err);
+  }
+}
+
+// Render coinjoin sessions
+async function renderCoinjoinSessions(sessions, containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  
+  if (sessions.length === 0) {
+    container.innerHTML = '<div class="empty-state">No coinjoin sessions found.</div>';
+    return;
+  }
+  
+  // Get all revealed zero-trust sessions for participant count
+  let revealedCount = 0;
+  try {
+    const allSessions = await electronAPI.coinjoin.list();
+    revealedCount = allSessions.filter(({ session }) => 
+      session.zeroTrustMode && session.status === 'revealed'
+    ).length;
+  } catch (e) {
+    console.error('Error getting participant count:', e);
+  }
+  
+  container.innerHTML = sessions.map(({ sessionId, session }) => {
+    // Show reveal button for committed zero-trust sessions
+    const showRevealButton = session.zeroTrustMode && session.status === 'committed';
+    // Check if we have stored data for one-click reveal
+    const hasStoredData = session.originalUtxos && session.originalUtxos.length > 0 && session.originalDestination;
+    
+    // Use the same structure as regular session cards
+    return `
+      <div class="session-card" data-session-id="${sessionId}" data-status="${session.status}">
+        <div class="session-header">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <div>
+              <div class="session-id">${sessionId.substring(0, 16)}...</div>
+              <span class="status-badge status-${session.status}">${session.status.replace(/_/g, ' ')}</span>
+              <span class="status-badge" style="background: var(--accent-secondary); margin-left: 0.25rem;">${session.zeroTrustMode ? 'Zero-Trust' : 'Trusted'} Coinjoin</span>
+            </div>
+          </div>
+        </div>
+        ${renderTimeline({ ...session, type: 'coinjoin' })}
+        <div class="collapsible-section" style="margin-top: 0.75rem;">
+          <div class="collapsible-header" data-target="session-details-${sessionId}">
+            <span style="font-weight: 600; font-size: 0.9rem; color: var(--text-secondary);">Session Details</span>
+            <span class="collapse-icon">▼</span>
+          </div>
+          <div class="session-details collapsible-content" id="session-details-${sessionId}">
+            ${session.depositAddress ? `
+              <div class="detail-row">
+                <span class="detail-label">Deposit Address:</span>
+                <span class="address-display">${session.depositAddress}</span>
+              </div>
+            ` : ''}
+            ${session.amount ? `
+              <div class="detail-row">
+                <span class="detail-label">Amount:</span>
+                <span>${(Number(session.amount) / 1e8).toFixed(8)} KAS</span>
+              </div>
+            ` : ''}
+            ${session.destinationAddress ? `
+              <div class="detail-row">
+                <span class="detail-label">Destination:</span>
+                <span class="address-display">${session.destinationAddress}</span>
+              </div>
+            ` : ''}
+            ${session.utxoCommitments && session.utxoCommitments.length > 0 ? `
+              <div class="detail-row">
+                <span class="detail-label">UTXO Commitments:</span>
+                <span>${session.utxoCommitments.length}</span>
+              </div>
+            ` : ''}
+            ${session.destinationHash ? `
+              <div class="detail-row">
+                <span class="detail-label">Destination Hash:</span>
+                <span class="address-display" style="font-size: 0.8rem;">${session.destinationHash.substring(0, 32)}...</span>
+              </div>
+            ` : ''}
+            ${session.zeroTrustMode && session.status === 'revealed' ? (() => {
+              const canBuild = revealedCount >= 3;
+              return `
+              <div class="detail-row" style="background: ${canBuild ? 'rgba(112, 199, 186, 0.15)' : 'rgba(73, 234, 203, 0.1)'}; padding: 0.75rem; border-radius: 4px; margin-top: 0.5rem; border-left: 3px solid ${canBuild ? 'var(--kaspa-primary)' : 'var(--kaspa-accent)'};">
+                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;">
+                  <div>
+                    <span class="detail-label" style="color: ${canBuild ? 'var(--kaspa-primary)' : 'var(--kaspa-accent)'}; font-weight: 600; font-size: 0.9rem;">Participants:</span>
+                    <span style="color: ${canBuild ? 'var(--kaspa-primary)' : 'var(--kaspa-accent)'}; font-weight: 600; margin-left: 0.25rem;">${revealedCount} of 3-10</span>
+                  </div>
+                  ${canBuild ? `
+                  <span style="color: var(--kaspa-primary); font-weight: 600; font-size: 0.85rem;">✓ Ready to Build!</span>
+                  ` : `
+                  <span style="color: var(--kaspa-accent); font-size: 0.85rem;">Need ${3 - revealedCount} more</span>
+                  `}
+                </div>
+              </div>
+            `;
+            })() : ''}
+            ${session.error ? `
+              <div class="detail-row" style="color: var(--error);">
+                <span class="detail-label">Error:</span>
+                <span>${escapeHtml(session.error)}</span>
+              </div>
+            ` : ''}
+          </div>
+        </div>
+        <div class="session-actions">
+          ${showRevealButton ? `
+          ${hasStoredData ? `
+          <button type="button" class="btn btn-secondary coinjoin-reveal-oneclick-btn" data-session-id="${escapeHtml(sessionId)}" title="One-click reveal using stored data">✨ One-Click Reveal</button>
+          ` : ''}
+          <button type="button" class="btn btn-primary coinjoin-reveal-btn" data-session-id="${escapeHtml(sessionId)}" title="${hasStoredData ? 'Manual reveal (or edit stored data)' : 'Reveal UTXOs'}">${hasStoredData ? 'Edit & Reveal' : 'Reveal UTXOs'}</button>
+          ` : ''}
+          ${session.zeroTrustMode && session.status === 'revealed' ? `
+          <button type="button" class="btn btn-primary coinjoin-build-btn" data-session-id="${escapeHtml(sessionId)}" title="Build coinjoin transaction with other revealed participants">🔨 Build Transaction</button>
+          ` : ''}
+          <button type="button" class="btn btn-secondary coinjoin-view-btn" data-session-id="${escapeHtml(sessionId)}">View</button>
+          <button type="button" class="btn btn-danger coinjoin-delete-btn" data-session-id="${escapeHtml(sessionId)}">Delete</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+  
+  // Attach event listeners using event delegation (same pattern as regular sessions)
+  container.addEventListener('click', async (ev) => {
+    const target = ev.target;
+    if (!target || !target.classList) return;
+    
+    const sessionId = target.getAttribute('data-session-id');
+    if (!sessionId) return;
+    
+    // View button
+    if (target.classList.contains('coinjoin-view-btn')) {
+      viewCoinjoinSession(sessionId);
+      return;
+    }
+    
+    // Delete button
+    if (target.classList.contains('coinjoin-delete-btn')) {
+      if (!confirm('Are you sure you want to delete this coinjoin session?')) {
+        return;
+      }
+      try {
+        const result = await electronAPI.session.delete(sessionId);
+        if (result.success) {
+          showMessage('Coinjoin session deleted successfully', 'success');
+          loadCoinjoinSessions();
+        } else {
+          showMessage(result.error || 'Failed to delete session', 'error');
+        }
+      } catch (err) {
+        showMessage(`Error deleting session: ${err.message}`, 'error');
+      }
+      return;
+    }
+    
+    // Reveal button
+    if (target.classList.contains('coinjoin-reveal-btn')) {
+      openRevealModal(sessionId);
+      return;
+    }
+    
+    // One-click reveal button
+    if (target.classList.contains('coinjoin-reveal-oneclick-btn')) {
+      await oneClickReveal(sessionId);
+      return;
+    }
+    
+    // Build transaction button
+    if (target.classList.contains('coinjoin-build-btn')) {
+      await buildCoinjoinTransaction(sessionId);
+      return;
+    }
+  });
+}
+
+// Refresh coinjoin stats
+async function refreshCoinjoinStats() {
+  try {
+    const stats = await electronAPI.coinjoin.stats();
+    const statsEl = document.getElementById('coinjoin-stats');
+    if (!statsEl) return;
+    
+    statsEl.innerHTML = `
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem;">
+        <div style="text-align: center; padding: 0.75rem; background: rgba(112, 199, 186, 0.1); border-radius: 8px; border: 1px solid rgba(112, 199, 186, 0.3);">
+          <div style="font-size: 2rem; font-weight: 700; color: var(--kaspa-primary); margin-bottom: 0.5rem;">${stats.zeroTrust.committed || 0}</div>
+          <div style="font-size: 0.875rem; color: var(--text-secondary); font-weight: 500;">Committed</div>
+        </div>
+        <div style="text-align: center; padding: 0.75rem; background: rgba(73, 234, 203, 0.1); border-radius: 8px; border: 1px solid rgba(73, 234, 203, 0.3);">
+          <div style="font-size: 2rem; font-weight: 700; color: var(--kaspa-accent); margin-bottom: 0.5rem;">${stats.zeroTrust.revealed}</div>
+          <div style="font-size: 0.875rem; color: var(--text-secondary); font-weight: 500;">Revealed</div>
+        </div>
+        <div style="text-align: center; padding: 0.75rem; background: rgba(112, 199, 186, 0.1); border-radius: 8px; border: 1px solid rgba(112, 199, 186, 0.3);">
+          <div style="font-size: 2rem; font-weight: 700; color: var(--kaspa-primary); margin-bottom: 0.5rem;">${stats.zeroTrust.completed || 0}</div>
+          <div style="font-size: 0.875rem; color: var(--text-secondary); font-weight: 500;">Completed</div>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    console.error('Error loading coinjoin stats:', err);
+  }
+}
+
+// Open reveal modal for zero-trust coinjoin
+async function openRevealModal(sessionId) {
+  try {
+    const session = await electronAPI.coinjoin.get(sessionId);
+    if (!session) {
+      showMessage('Session not found', 'error');
+      return;
+    }
+    
+    if (!session.zeroTrustMode) {
+      showMessage('This is not a zero-trust coinjoin session', 'error');
+      return;
+    }
+    
+    if (session.status !== 'committed') {
+      showMessage(`Session status is ${session.status}, cannot reveal UTXOs`, 'error');
+      return;
+    }
+    
+    const modal = document.getElementById('coinjoin-reveal-modal');
+    const form = document.getElementById('coinjoin-reveal-form');
+    const destinationInput = document.getElementById('coinjoin-reveal-destination');
+    const utxosInput = document.getElementById('coinjoin-reveal-utxos');
+    const oneClickRevealBtn = document.getElementById('coinjoin-reveal-oneclick-btn');
+    
+    if (!modal || !form) return;
+    
+    // Store session ID for form submission
+    form.dataset.sessionId = sessionId;
+    
+    // Auto-fill with stored data if available
+    if (session.originalUtxos && session.originalUtxos.length > 0) {
+      destinationInput.value = session.originalDestination || '';
+      utxosInput.value = JSON.stringify(session.originalUtxos, null, 2);
+      
+      // Show one-click reveal button if we have stored data
+      if (oneClickRevealBtn) {
+        oneClickRevealBtn.style.display = 'block';
+      }
+    } else {
+      // No stored data - user needs to enter manually
+      form.reset();
+      destinationInput.value = '';
+      utxosInput.value = '';
+      if (oneClickRevealBtn) {
+        oneClickRevealBtn.style.display = 'none';
+      }
+    }
+    
+    // Show modal
+    modal.classList.remove('hidden');
+  } catch (err) {
+    showMessage(`Error: ${err.message}`, 'error');
+  }
+}
+
+// One-click reveal using stored data
+async function oneClickReveal(sessionId) {
+  try {
+    const session = await electronAPI.coinjoin.get(sessionId);
+    if (!session || !session.originalUtxos || !session.originalDestination) {
+      showMessage('Stored UTXO data not found. Please use manual reveal.', 'error');
+      return;
+    }
+    
+    showMessage('Revealing UTXOs...', 'info');
+    const result = await electronAPI.coinjoin.reveal(sessionId, session.originalUtxos, session.originalDestination);
+    
+    if (result.success) {
+      showMessage(result.message || 'UTXOs revealed successfully! Waiting for other participants.', 'success');
+      closeRevealModal();
+      loadCoinjoinSessions();
+      refreshCoinjoinStats();
+    } else {
+      showMessage(result.error || 'Failed to reveal UTXOs', 'error');
+    }
+  } catch (err) {
+    showMessage(`Error: ${err.message}`, 'error');
+  }
+}
+
+// Close reveal modal
+function closeRevealModal() {
+  const modal = document.getElementById('coinjoin-reveal-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+    document.getElementById('coinjoin-reveal-form').reset();
+  }
+}
+
+// Store transaction data globally for signing
+let currentCoinjoinTransaction = null;
+
+// Build coinjoin transaction
+async function buildCoinjoinTransaction(sessionId) {
+  try {
+    // Get all revealed zero-trust sessions
+    const allSessions = await electronAPI.coinjoin.list();
+    let revealedSessions = allSessions.filter(({ session }) => 
+      session.zeroTrustMode && session.status === 'revealed'
+    );
+    
+    if (revealedSessions.length < 3) {
+      showMessage(`Need at least 3 revealed participants (up to 10 supported). Currently: ${revealedSessions.length}`, 'warning');
+      return;
+    }
+    
+    if (revealedSessions.length > 10) {
+      showMessage(`Maximum 10 participants supported. Currently: ${revealedSessions.length}. Only the first 10 will be used.`, 'warning');
+      // Limit to first 10
+      revealedSessions = revealedSessions.slice(0, 10);
+    }
+    
+    // Confirm with user
+    const sessionIds = revealedSessions.map(({ sessionId }) => sessionId);
+    const confirmMsg = `Build coinjoin transaction with ${revealedSessions.length} participants?\n\n` +
+      `This will create a transaction with equal outputs for all participants.`;
+    
+    if (!confirm(confirmMsg)) {
+      return;
+    }
+    
+    showMessage('Building coinjoin transaction...', 'info');
+    const result = await electronAPI.coinjoin.build(sessionIds);
+    
+    if (result) {
+      // Store transaction data
+      currentCoinjoinTransaction = result;
+      
+      // Open signing modal
+      openCoinjoinSignModal(result);
+      showMessage('Transaction structure built! Please sign your inputs.', 'success');
+    }
+  } catch (err) {
+    showMessage(`Error: ${err.message}`, 'error');
+  }
+}
+
+// Open coinjoin signing modal
+async function openCoinjoinSignModal(transactionData) {
+  const modal = document.getElementById('coinjoin-sign-modal');
+  if (!modal) {
+    showMessage('Signing modal not found in HTML', 'error');
+    return;
+  }
+  
+  // Store transaction data globally
+  currentCoinjoinTransaction = transactionData;
+  
+  // Try to load existing signatures from backend
+  try {
+    const signaturesResult = await electronAPI.coinjoin.getSignatures(transactionData);
+    if (signaturesResult && signaturesResult.success && signaturesResult.signatures) {
+      currentCoinjoinTransaction.signatures = signaturesResult.signatures;
+    } else {
+      currentCoinjoinTransaction.signatures = [];
+    }
+  } catch (err) {
+    console.warn('[Coinjoin] Failed to load existing signatures:', err);
+    currentCoinjoinTransaction.signatures = [];
+  }
+  
+  // Get all sessions to map participants
+  const allSessions = await electronAPI.coinjoin.list();
+  const participantMap = new Map();
+  
+  transactionData.inputOwners.forEach(owner => {
+    if (!participantMap.has(owner.sessionId)) {
+      const session = allSessions.find(s => s.sessionId === owner.sessionId);
+      if (session && session.session) {
+        // Use session.destinationAddress instead of owner.destinationAddress
+        // to get the actual destination address from the session
+        participantMap.set(owner.sessionId, {
+          sessionId: owner.sessionId,
+          destinationAddress: session.session.destinationAddress || owner.destinationAddress,
+          inputCount: 0,
+          signed: false,
+          signedInputs: []
+        });
+      }
+    }
+    if (participantMap.has(owner.sessionId)) {
+      participantMap.get(owner.sessionId).inputCount++;
+    }
+  });
+  
+  const participants = Array.from(participantMap.values());
+  
+  // Check which participants have signed
+  const existingSignatures = currentCoinjoinTransaction.signatures || [];
+  const signedInputIndices = new Set(existingSignatures.map(sig => sig.inputIndex));
+  
+  participants.forEach(p => {
+    // Find all input indices for this participant
+    const participantInputIndices = [];
+    transactionData.inputOwners.forEach((owner, idx) => {
+      if (owner.sessionId === p.sessionId) {
+        participantInputIndices.push(owner.inputIndex);
+      }
+    });
+    
+    // Check if all inputs for this participant are signed
+    const allSigned = participantInputIndices.every(idx => signedInputIndices.has(idx));
+    p.signed = allSigned;
+    p.signedInputs = existingSignatures.filter(sig => participantInputIndices.includes(sig.inputIndex));
+  });
+  
+  // Find current user's session(s) by matching wallet address
+  // For testing, multiple participants might have the same address, so we track all matches
+  let currentUserSessionIds = new Set();
+  let walletAddress = null;
+  try {
+    const walletInfoResult = await electronAPI.wallet.info();
+    if (walletInfoResult && walletInfoResult.success && walletInfoResult.wallet && walletInfoResult.wallet.address) {
+      walletAddress = walletInfoResult.wallet.address;
+      const normalizedWalletAddr = walletAddress.replace(/^kaspa:/, '').toLowerCase();
+      
+      // Find ALL matching participants (for testing with same address)
+      const matchingParticipants = participants.filter(p => {
+        const pAddress = (p.destinationAddress || '').replace(/^kaspa:/, '').toLowerCase();
+        const normalizedPAddr = pAddress.toLowerCase();
+        return normalizedPAddr === normalizedWalletAddr;
+      });
+      
+      if (matchingParticipants.length > 0) {
+        matchingParticipants.forEach(p => {
+          currentUserSessionIds.add(p.sessionId);
+        });
+        console.log(`[Coinjoin] Found ${matchingParticipants.length} matching participant(s) for wallet ${walletAddress}:`, matchingParticipants.map(p => p.sessionId));
+      } else {
+        // No match found - log for debugging
+        console.log('[Coinjoin] No matching participant found for wallet:', walletAddress);
+        console.log('[Coinjoin] Available participants:', participants.map(p => ({
+          sessionId: p.sessionId,
+          destinationAddress: p.destinationAddress
+        })));
+        // For testing: if no match, allow signing first session (might be testing with different addresses)
+        if (transactionData.sessionIds.length > 0) {
+          currentUserSessionIds.add(transactionData.sessionIds[0]);
+        }
+      }
+    } else {
+      console.log('[Coinjoin] No wallet imported - defaulting to first session for testing');
+      if (transactionData.sessionIds.length > 0) {
+        currentUserSessionIds.add(transactionData.sessionIds[0]);
+      }
+    }
+  } catch (e) {
+    console.error('Error finding current user session:', e);
+    if (transactionData.sessionIds.length > 0) {
+      currentUserSessionIds.add(transactionData.sessionIds[0]);
+    }
+  }
+  
+  // Store wallet address for use in template (to show hints)
+  const normalizedWalletAddr = walletAddress ? walletAddress.replace(/^kaspa:/, '').toLowerCase() : null;
+  
+  // For backward compatibility, keep currentUserSessionId as first match (for highlighting)
+  const currentUserSessionId = Array.from(currentUserSessionIds)[0] || null;
+  
+  // Render modal content
+  const modalContent = document.getElementById('coinjoin-sign-modal-content');
+  // Calculate participant contributions
+  const participantContributions = new Map();
+  transactionData.inputOwners.forEach(owner => {
+    if (!participantContributions.has(owner.sessionId)) {
+      participantContributions.set(owner.sessionId, {
+        sessionId: owner.sessionId,
+        inputCount: 0,
+        totalAmount: 0n
+      });
+    }
+  });
+  
+  // Calculate each participant's contribution
+  transactionData.inputs.forEach((input, idx) => {
+    const owner = transactionData.inputOwners.find(o => o.inputIndex === idx);
+    if (owner && participantContributions.has(owner.sessionId)) {
+      const contrib = participantContributions.get(owner.sessionId);
+      contrib.inputCount++;
+      contrib.totalAmount += BigInt(String(input.amount || '0'));
+    }
+  });
+  
+  modalContent.innerHTML = `
+    <div class="coinjoin-sign-info" style="margin-bottom: 1.5rem; padding: 1rem; background: rgba(112, 199, 186, 0.1); border-radius: 8px;">
+      <h3 style="margin: 0 0 0.75rem 0; color: var(--kaspa-primary);">Transaction Ready</h3>
+      
+      <!-- Security Notice -->
+      <div style="padding: 0.75rem; background: rgba(112, 199, 186, 0.15); border-left: 3px solid var(--kaspa-primary); border-radius: 4px; margin-bottom: 1rem;">
+        <strong style="color: var(--kaspa-primary); display: flex; align-items: center; gap: 0.5rem;">
+          <span>🔒</span>
+          <span>Secure Signing</span>
+        </strong>
+        <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.25rem;">
+          Your private key stays on your device. It is only used locally to sign your inputs and is never transmitted to the server.
+        </div>
+      </div>
+      
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.75rem; font-size: 0.9rem; margin-bottom: 1rem;">
+        <div>
+          <strong>Participants:</strong> ${transactionData.participants}
+        </div>
+        <div>
+          <strong>Inputs:</strong> ${transactionData.inputs.length} UTXOs
+        </div>
+        <div>
+          <strong>Total Input:</strong> ${(Number(transactionData.totalInput) / 1e8).toFixed(8)} KAS
+        </div>
+        <div>
+          <strong>Total Output:</strong> ${(Number(transactionData.totalOutput) / 1e8).toFixed(8)} KAS
+        </div>
+        <div>
+          <strong>Fee:</strong> ${(Number(transactionData.fee) / 1e8).toFixed(8)} KAS
+        </div>
+        <div>
+          <strong>Per Participant:</strong> ${(Number(transactionData.outputs[0]?.amount || 0) / 1e8).toFixed(8)} KAS
+        </div>
+      </div>
+      <div style="padding: 0.75rem; background: rgba(255, 193, 7, 0.1); border-left: 3px solid var(--warning); border-radius: 4px; margin-top: 0.75rem;">
+        <strong style="color: var(--warning);">💡 Important:</strong>
+        <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.25rem;">
+          In zero-trust coinjoin, <strong>all UTXOs you provided</strong> are used, not a preset amount. 
+          Each participant receives an <strong>equal share</strong> of the total (minus fees).
+        </div>
+        <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.5rem;">
+          <strong>Your contribution:</strong> ${(() => {
+            const userContrib = participantContributions.get(currentUserSessionId);
+            if (userContrib) {
+              return `${(Number(userContrib.totalAmount) / 1e8).toFixed(8)} KAS (${userContrib.inputCount} UTXO${userContrib.inputCount > 1 ? 's' : ''})`;
+            }
+            return 'Calculating...';
+          })()}
+        </div>
+        ${transactionData.contributionStats && transactionData.contributionStats.ratio > 1.01 ? `
+        <div style="font-size: 0.85rem; color: var(--error); margin-top: 0.75rem; padding: 0.5rem; background: rgba(244, 67, 54, 0.1); border-radius: 4px; border-left: 3px solid var(--error);">
+          <strong>⚠️ Amount Mismatch:</strong> Participant contributions do not match (ratio: ${transactionData.contributionStats.ratio.toFixed(2)}x). 
+          Min: ${transactionData.contributionStats.min.toFixed(8)} KAS, Max: ${transactionData.contributionStats.max.toFixed(8)} KAS. 
+          All participants must contribute the EXACT same amount for fairness and security. This transaction cannot be built until all participants match exactly.
+        </div>
+        ` : ''}
+      </div>
+    </div>
+    
+    <div class="coinjoin-sign-participants" style="margin-bottom: 1.5rem;">
+      <h4 style="margin: 0 0 0.75rem 0;">Signing Status</h4>
+      <div id="coinjoin-sign-participants-list">
+        ${participants.map((p, idx) => `
+          <div class="coinjoin-participant-sign" data-session-id="${p.sessionId}" style="padding: 1rem; margin-bottom: 0.75rem; border: 1px solid rgba(112, 199, 186, 0.3); border-radius: 8px; ${p.sessionId === currentUserSessionId ? 'background: rgba(112, 199, 186, 0.05);' : ''}">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;">
+              <div>
+                <strong>Participant ${idx + 1}</strong>
+                <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.25rem;">
+                  ${p.destinationAddress.substring(0, 20)}... (${p.inputCount} input${p.inputCount > 1 ? 's' : ''})
+                </div>
+              </div>
+              <div>
+                ${p.signed ? `
+                  <span class="coinjoin-sign-status" style="padding: 0.5rem 1rem; background: rgba(112, 199, 186, 0.1); color: var(--kaspa-primary); border-radius: 4px; display: flex; align-items: center; gap: 0.25rem;">
+                    ✓ Signed (${p.inputCount} input${p.inputCount > 1 ? 's' : ''})
+                  </span>
+                ` : currentUserSessionIds.has(p.sessionId) ? `
+                  <button class="btn btn-primary coinjoin-sign-btn" data-session-id="${p.sessionId}" style="padding: 0.5rem 1rem;">
+                    ✍️ Sign My Inputs
+                  </button>
+                ` : `
+                  <span class="coinjoin-sign-status" style="padding: 0.5rem 1rem; background: rgba(255, 193, 7, 0.1); color: var(--warning); border-radius: 4px;">
+                    ⏳ Waiting for signature
+                    ${(() => {
+                      // Show hint if wallet is imported but doesn't match this participant
+                      if (normalizedWalletAddr) {
+                        const pAddr = (p.destinationAddress || '').replace(/^kaspa:/, '').toLowerCase();
+                        if (pAddr && normalizedWalletAddr !== pAddr) {
+                          return '<br><small style="font-size: 0.75rem; opacity: 0.8;">Import wallet matching this address to sign</small>';
+                        }
+                      }
+                      return '';
+                    })()}
+                  </span>
+                `}
+              </div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+    
+    <div class="coinjoin-sign-actions" style="display: flex; gap: 0.75rem; justify-content: flex-end; padding-top: 1rem; border-top: 1px solid rgba(112, 199, 186, 0.3);">
+      <button class="btn btn-secondary" id="coinjoin-sign-cancel-btn">Cancel</button>
+      <button class="btn btn-primary" id="coinjoin-sign-submit-btn" ${(() => {
+        const allSigned = participants.every(p => p.signed);
+        return allSigned ? '' : 'disabled style="opacity: 0.5; cursor: not-allowed;"';
+      })()}>
+        Submit Transaction
+      </button>
+    </div>
+  `;
+  
+  // Attach event listeners
+  document.querySelectorAll('.coinjoin-sign-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const sessionId = btn.getAttribute('data-session-id');
+      await signMyInputs(sessionId);
+    });
+  });
+  
+  const cancelBtn = document.getElementById('coinjoin-sign-cancel-btn');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => {
+      closeCoinjoinSignModal();
+    });
+  }
+  
+  const closeBtn = document.getElementById('close-coinjoin-sign-modal');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      closeCoinjoinSignModal();
+    });
+  }
+  
+  const submitBtn = document.getElementById('coinjoin-sign-submit-btn');
+  if (submitBtn) {
+    submitBtn.addEventListener('click', async () => {
+      await submitCoinjoinTransaction();
+    });
+  }
+  
+  // Show modal
+  modal.classList.remove('hidden');
+}
+
+// Sign my inputs
+async function signMyInputs(sessionId) {
+  if (!currentCoinjoinTransaction) {
+    showMessage('No transaction data available', 'error');
+    return;
+  }
+  
+  try {
+    // Check if wallet is imported
+    const walletInfoResult = await electronAPI.wallet.info();
+    if (!walletInfoResult || !walletInfoResult.success || !walletInfoResult.wallet) {
+      showMessage('Please import your wallet first in the Wallet tab', 'warning');
+      return;
+    }
+    
+    // Get private key separately (it's not in wallet.info for security)
+    const privateKeyResult = await electronAPI.wallet.getPrivateKey();
+    if (!privateKeyResult || !privateKeyResult.success || !privateKeyResult.privateKey) {
+      showMessage('Could not retrieve wallet private key. Please re-import your wallet.', 'error');
+      return;
+    }
+    
+    const privateKeyHex = privateKeyResult.privateKey;
+    
+    showMessage('Signing your inputs...', 'info');
+    const result = await electronAPI.coinjoin.sign(sessionId, currentCoinjoinTransaction, privateKeyHex);
+    
+    if (result && result.signedInputs) {
+      // Store signatures in transaction data
+      if (!currentCoinjoinTransaction.signatures) {
+        currentCoinjoinTransaction.signatures = [];
+      }
+      
+      // Remove any existing signatures for these inputs and add new ones
+      const signedInputIndices = new Set(result.signedInputs.map(sig => sig.inputIndex));
+      currentCoinjoinTransaction.signatures = currentCoinjoinTransaction.signatures.filter(
+        sig => !signedInputIndices.has(sig.inputIndex)
+      );
+      currentCoinjoinTransaction.signatures.push(...result.signedInputs);
+      
+      // Store signatures in backend for persistence
+      try {
+        await electronAPI.coinjoin.storeSignatures(currentCoinjoinTransaction, currentCoinjoinTransaction.signatures);
+      } catch (err) {
+        console.warn('[Coinjoin] Failed to store signatures:', err);
+      }
+      
+      // Update UI to show signed status
+      const participantElement = document.querySelector(`.coinjoin-participant-sign[data-session-id="${sessionId}"]`);
+      if (participantElement) {
+        const statusContainer = participantElement.querySelector('div > div:last-child');
+        if (statusContainer) {
+          const inputCount = result.inputCount || 1;
+          statusContainer.innerHTML = `
+            <span class="coinjoin-sign-status" style="padding: 0.5rem 1rem; background: rgba(112, 199, 186, 0.1); color: var(--kaspa-primary); border-radius: 4px; display: flex; align-items: center; gap: 0.25rem;">
+              ✓ Signed (${inputCount} input${inputCount > 1 ? 's' : ''})
+            </span>
+          `;
+        }
+      }
+      
+      // Check if all inputs are signed by checking all participants
+      const allSessions = await electronAPI.coinjoin.list();
+      const participantMap = new Map();
+      currentCoinjoinTransaction.inputOwners.forEach(owner => {
+        if (!participantMap.has(owner.sessionId)) {
+          const session = allSessions.find(s => s.sessionId === owner.sessionId);
+          if (session && session.session) {
+            participantMap.set(owner.sessionId, {
+              sessionId: owner.sessionId,
+              inputCount: 0
+            });
+          }
+        }
+        if (participantMap.has(owner.sessionId)) {
+          participantMap.get(owner.sessionId).inputCount++;
+        }
+      });
+      
+      const signedInputIndicesSet = new Set(currentCoinjoinTransaction.signatures.map(sig => sig.inputIndex));
+      const allSigned = Array.from(participantMap.values()).every(p => {
+        const participantInputIndices = [];
+        currentCoinjoinTransaction.inputOwners.forEach((owner, idx) => {
+          if (owner.sessionId === p.sessionId) {
+            participantInputIndices.push(owner.inputIndex);
+          }
+        });
+        return participantInputIndices.every(idx => signedInputIndicesSet.has(idx));
+      });
+      
+      if (allSigned) {
+        // Enable submit button
+        const submitBtn = document.getElementById('coinjoin-sign-submit-btn');
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.style.opacity = '1';
+          submitBtn.style.cursor = 'pointer';
+        }
+        showMessage('All inputs signed! You can now submit the transaction.', 'success');
+      } else {
+        const allInputsCount = currentCoinjoinTransaction.inputs.length;
+        const signedInputsCount = currentCoinjoinTransaction.signatures.length;
+        showMessage(`Signed ${result.inputCount} input(s). ${allInputsCount - signedInputsCount} more needed.`, 'success');
+      }
+    }
+  } catch (err) {
+    showMessage(`Error signing: ${err.message}`, 'error');
+  }
+}
+
+// Submit coinjoin transaction
+async function submitCoinjoinTransaction() {
+  if (!currentCoinjoinTransaction) {
+    showMessage('No transaction data available', 'error');
+    return;
+  }
+  
+  const allInputsCount = currentCoinjoinTransaction.inputs.length;
+  const signedInputsCount = currentCoinjoinTransaction.signatures ? currentCoinjoinTransaction.signatures.length : 0;
+  
+  if (signedInputsCount < allInputsCount) {
+    showMessage(`Not all inputs are signed. ${allInputsCount - signedInputsCount} more needed.`, 'warning');
+    return;
+  }
+  
+  if (!confirm(`Submit coinjoin transaction?\n\nThis will broadcast the transaction to the network.`)) {
+    return;
+  }
+  
+  try {
+    showMessage('Submitting transaction...', 'info');
+    const result = await electronAPI.coinjoin.submit(currentCoinjoinTransaction, currentCoinjoinTransaction.signatures);
+    
+    if (result && result.success) {
+      showMessage(`Transaction submitted! TX ID: ${result.transactionId}`, 'success');
+      closeCoinjoinSignModal();
+      loadCoinjoinSessions();
+      refreshCoinjoinStats();
+      currentCoinjoinTransaction = null;
+    }
+  } catch (err) {
+    showMessage(`Error submitting transaction: ${err.message}`, 'error');
+  }
+}
+
+// Close coinjoin sign modal
+function closeCoinjoinSignModal() {
+  const modal = document.getElementById('coinjoin-sign-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+  }
+  currentCoinjoinTransaction = null;
+}
+
+// View coinjoin session
+async function viewCoinjoinSession(sessionId) {
+  try {
+    const session = await electronAPI.coinjoin.get(sessionId);
+    if (!session) {
+      showMessage('Session not found', 'error');
+      return;
+    }
+    
+    const details = `
+      Session ID: ${session.id}
+      Status: ${session.status}
+      Mode: ${session.zeroTrustMode ? 'Zero-Trust' : 'Trusted'}
+      Created: ${new Date(session.createdAt).toLocaleString()}
+      ${session.depositAddress ? `Deposit: ${session.depositAddress}` : ''}
+      ${session.amount ? `Amount: ${(Number(session.amount) / 1e8).toFixed(8)} KAS` : ''}
+      ${session.destinationAddress ? `Destination: ${session.destinationAddress}` : ''}
+      ${session.error ? `Error: ${session.error}` : ''}
+    `;
+    
+    alert(details);
+  } catch (err) {
+    showMessage(`Error: ${err.message}`, 'error');
+  }
+}
+
+// Load WebSocket server status
+async function loadWebSocketServerStatus() {
+  try {
+    const wsInfo = await electronAPI.coinjoin.ws.info();
+    const wsStatusEl = document.getElementById('coinjoin-ws-status');
+    if (!wsStatusEl) return;
+    
+    if (wsInfo.running) {
+      wsStatusEl.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <span style="width: 12px; height: 12px; background: var(--kaspa-primary); border-radius: 50%; box-shadow: 0 0 8px rgba(112, 199, 186, 0.6); animation: pulse 2s infinite;"></span>
+            <span style="font-weight: 600; color: var(--text-primary);">WebSocket Server</span>
+            <span style="color: var(--kaspa-primary); font-weight: 600;">Running</span>
+          </div>
+          <div style="flex: 1; display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.875rem;">
+            <span style="color: var(--text-secondary);">
+              <strong style="color: var(--kaspa-primary);">${wsInfo.lobbyParticipants}</strong> participants in lobby
+            </span>
+            <span style="color: var(--text-secondary);">
+              <strong style="color: var(--kaspa-primary);">${wsInfo.activeRooms}</strong> active rooms
+            </span>
+          </div>
+          <code style="font-size: 0.8125rem; background: rgba(0, 0, 0, 0.2); padding: 0.375rem 0.75rem; border-radius: 6px; color: var(--kaspa-primary);">${wsInfo.url}</code>
+        </div>
+        <style>
+          @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+          }
+        </style>
+      `;
+    } else {
+      wsStatusEl.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <span style="width: 12px; height: 12px; background: #9e9e9e; border-radius: 50%;"></span>
+            <span style="font-weight: 600; color: var(--text-secondary);">WebSocket Server</span>
+            <span style="color: #9e9e9e; font-weight: 600;">Not running</span>
+          </div>
+          <button class="btn btn-sm btn-primary" id="coinjoin-ws-start-btn" style="padding: 0.5rem 1rem; font-weight: 600;">▶️ Start Server</button>
+        </div>
+      `;
+      
+      // Attach event listener to start button
+      const startBtn = document.getElementById('coinjoin-ws-start-btn');
+      if (startBtn) {
+        startBtn.addEventListener('click', startWebSocketServer);
+      }
+    }
+  } catch (err) {
+    console.error('Error loading WebSocket status:', err);
+  }
+}
+
+// Start WebSocket server
+async function startWebSocketServer() {
+  try {
+    const result = await electronAPI.coinjoin.ws.start(8080);
+    if (result.success) {
+      showMessage(`WebSocket server started on ${result.url}`, 'success');
+      loadWebSocketServerStatus();
+    } else {
+      showMessage(`Failed to start WebSocket server: ${result.error}`, 'error');
+    }
+  } catch (err) {
+    showMessage(`Error: ${err.message}`, 'error');
+  }
+}
+
+// Stop WebSocket server
+window.stopWebSocketServer = async function() {
+  try {
+    const result = await electronAPI.coinjoin.ws.stop();
+    if (result.success) {
+      showMessage('WebSocket server stopped', 'success');
+      loadWebSocketServerStatus();
+    } else {
+      showMessage(`Failed to stop WebSocket server: ${result.error}`, 'error');
+    }
+  } catch (err) {
+    showMessage(`Error: ${err.message}`, 'error');
+  }
+};
+
+// Refresh WebSocket status when coinjoin tab is loaded
+document.addEventListener('DOMContentLoaded', () => {
+  // Override the coinjoin tab load to also refresh WS status
+  const originalLoad = loadCoinjoinSessions;
+  loadCoinjoinSessions = async function() {
+    await originalLoad();
+    await loadWebSocketServerStatus();
+  };
+});
+
+function formatHashrate(h) {
+  if (!h || h === 0) return '0 H/s';
+  if (h < 1000) return `${h.toFixed(2)} H/s`;
+  if (h < 1000000) return `${(h / 1000).toFixed(2)} KH/s`;
+  if (h < 1000000000) return `${(h / 1000000).toFixed(2)} MH/s`;
+  const gh = h / 1000000000;
+  if (gh >= 1000) return `${(gh / 1000).toFixed(2)} TH/s`;
+  return `${gh.toFixed(2)} GH/s`;
+}
+
+// Parse difficulty safely (from services/node-ui.js)
+function parseDifficulty(difficulty) {
+  if (!difficulty) return null;
+  
+  try {
+    if (typeof difficulty === 'bigint') {
+      return difficulty;
+    }
+    if (typeof difficulty === 'string') {
+      return BigInt(difficulty);
+    }
+    if (typeof difficulty === 'number') {
+      return BigInt(Math.floor(difficulty));
+    }
+  } catch (err) {
+    return null;
+  }
+  
+  return null;
+}
+
+// Render connection status section (from services/node-ui.js)
+function renderConnectionStatus(s) {
+  return `
+    <div class="status-section">
+      <h3>Connection Status</h3>
+      <div class="status-item">
+        <span class="status-label">Connected:</span>
+        <span class="status-value ${s.connected ? 'success' : 'error'}">${s.connected ? 'Yes' : 'No'}</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Synced:</span>
+        <span class="status-value ${s.synced ? 'success' : 'warning'}">${s.synced ? 'Yes' : 'No'}</span>
+      </div>
+      ${s.syncProgress !== null ? `
+      <div class="status-item">
+        <span class="status-label">Sync Progress:</span>
+        <span class="status-value">${s.syncProgress.toFixed(1)}%</span>
+      </div>
+      ` : ''}
+      <div class="status-item">
+        <span class="status-label">Healthy:</span>
+        <span class="status-value ${s.healthy ? 'success' : 'error'}">${s.healthy ? 'Yes' : 'No'}</span>
+      </div>
+    </div>
+  `;
+}
+
+// Render network info section (from services/node-ui.js)
+function renderNetworkInfo(s) {
+  return `
+    <div class="status-section">
+      <h3>Network Information</h3>
+      <div class="status-item">
+        <span class="status-label">Network:</span>
+        <span class="status-value">${s.networkId || 'Unknown'}</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Server Version:</span>
+        <span class="status-value">${s.serverVersion || 'Unknown'}</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">UTXO Indexed:</span>
+        <span class="status-value ${s.isUtxoIndexed ? 'success' : 'warning'}">${s.isUtxoIndexed ? 'Yes' : 'No'}</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Connected Peers:</span>
+        <span class="status-value">${s.peerCount || 0}</span>
+      </div>
+    </div>
+  `;
+}
+
+// Render BlockDAG stats section (from services/node-ui.js)
+function renderBlockDagStats(s) {
+  const difficulty = parseDifficulty(s.difficulty);
+  
+  return `
+    <div class="status-section">
+      <h3>BlockDAG Statistics</h3>
+      <div class="status-item">
+        <span class="status-label">Block Height:</span>
+        <span class="status-value">${formatNumberWithSeparators(s.blockCount || 0)}</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Headers:</span>
+        <span class="status-value">${formatNumberWithSeparators(s.headerCount || 0)}</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">DAA Score:</span>
+        <span class="status-value">${formatNumberWithSeparators(s.virtualDaaScore || 0)}</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Difficulty:</span>
+        <span class="status-value">${difficulty ? (Number(difficulty) / 1e12).toFixed(2) + ' TH' : 'N/A'}</span>
+      </div>
+    </div>
+  `;
+}
+
+// Render mempool stats section (from services/node-ui.js)
+function renderMempoolStats(mempool) {
+  return `
+    <div class="status-section">
+      <h3>Mempool Information</h3>
+      <div class="status-item">
+        <span class="status-label">Transactions:</span>
+        <span class="status-value">${formatNumber(mempool.transactionCount || 0)}</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Total Size:</span>
+        <span class="status-value">${formatBytes(mempool.totalSize || 0)}</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Oldest TX Age:</span>
+        <span class="status-value">${formatDuration(mempool.oldestTxAge)}</span>
+      </div>
+      ${mempool.averageFeeRate > 0 ? `
+      <div class="status-item">
+        <span class="status-label">Avg Fee Rate:</span>
+        <span class="status-value">${(mempool.averageFeeRate / 1e8).toFixed(8)} KAS</span>
+      </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+// Render fee estimates section (from services/node-ui.js)
+function renderFeeEstimates(mempool) {
+  if (!mempool.feeRates || (!mempool.feeRates.high && !mempool.feeRates.normal && !mempool.feeRates.low)) {
+    return '';
+  }
+  
+  return `
+    <div class="status-section">
+      <h3>Fee Estimates</h3>
+      ${mempool.feeRates.high ? `
+      <div class="status-item">
+        <span class="status-label">High Priority:</span>
+        <span class="status-value">${mempool.feeRates.high} sompi/byte</span>
+      </div>
+      ` : ''}
+      ${mempool.feeRates.normal ? `
+      <div class="status-item">
+        <span class="status-label">Normal:</span>
+        <span class="status-value">${mempool.feeRates.normal} sompi/byte</span>
+      </div>
+      ` : ''}
+      ${mempool.feeRates.low ? `
+      <div class="status-item">
+        <span class="status-label">Low Priority:</span>
+        <span class="status-value">${mempool.feeRates.low} sompi/byte</span>
+      </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+// Render node status modal (from services/node-ui.js)
 function renderNodeStatusModal(status) {
   const content = document.getElementById('node-status-content');
   
@@ -1684,136 +4338,14 @@ function renderNodeStatusModal(status) {
   
   const s = status;
   const mempool = s.mempool || {};
-  // Safely convert difficulty to BigInt if present, otherwise null
-  let difficulty = null;
-  if (s.difficulty) {
-    try {
-      if (typeof s.difficulty === 'bigint') {
-        difficulty = s.difficulty;
-      } else if (typeof s.difficulty === 'string') {
-        difficulty = BigInt(s.difficulty);
-      } else if (typeof s.difficulty === 'number') {
-        difficulty = BigInt(Math.floor(s.difficulty));
-      }
-    } catch (err) {
-      difficulty = null;
-    }
-  }
   
   content.innerHTML = `
     <div class="node-status-grid">
-      <!-- Connection Status -->
-      <div class="status-section">
-        <h3>Connection Status</h3>
-        <div class="status-item">
-          <span class="status-label">Connected:</span>
-          <span class="status-value ${s.connected ? 'success' : 'error'}">${s.connected ? 'Yes' : 'No'}</span>
-        </div>
-        <div class="status-item">
-          <span class="status-label">Synced:</span>
-          <span class="status-value ${s.synced ? 'success' : 'warning'}">${s.synced ? 'Yes' : 'No'}</span>
-        </div>
-        ${s.syncProgress !== null ? `
-        <div class="status-item">
-          <span class="status-label">Sync Progress:</span>
-          <span class="status-value">${s.syncProgress.toFixed(1)}%</span>
-        </div>
-        ` : ''}
-        <div class="status-item">
-          <span class="status-label">Healthy:</span>
-          <span class="status-value ${s.healthy ? 'success' : 'error'}">${s.healthy ? 'Yes' : 'No'}</span>
-        </div>
-      </div>
-      
-      <!-- Network Info -->
-      <div class="status-section">
-        <h3>Network Information</h3>
-        <div class="status-item">
-          <span class="status-label">Network:</span>
-          <span class="status-value">${s.networkId || 'Unknown'}</span>
-        </div>
-        <div class="status-item">
-          <span class="status-label">Server Version:</span>
-          <span class="status-value">${s.serverVersion || 'Unknown'}</span>
-        </div>
-        <div class="status-item">
-          <span class="status-label">UTXO Indexed:</span>
-          <span class="status-value ${s.isUtxoIndexed ? 'success' : 'warning'}">${s.isUtxoIndexed ? 'Yes' : 'No'}</span>
-        </div>
-        <div class="status-item">
-          <span class="status-label">Connected Peers:</span>
-          <span class="status-value">${s.peerCount || 0}</span>
-        </div>
-      </div>
-      
-      <!-- BlockDag Stats -->
-      <div class="status-section">
-        <h3>BlockDAG Statistics</h3>
-        <div class="status-item">
-          <span class="status-label">Block Height:</span>
-          <span class="status-value">${formatNumberWithSeparators(s.blockCount || 0)}</span>
-        </div>
-        <div class="status-item">
-          <span class="status-label">Headers:</span>
-          <span class="status-value">${formatNumberWithSeparators(s.headerCount || 0)}</span>
-        </div>
-        <div class="status-item">
-          <span class="status-label">DAA Score:</span>
-          <span class="status-value">${formatNumberWithSeparators(s.virtualDaaScore || 0)}</span>
-        </div>
-        <div class="status-item">
-          <span class="status-label">Difficulty:</span>
-          <span class="status-value">${difficulty ? (Number(difficulty) / 1e12).toFixed(2) + ' TH' : 'N/A'}</span>
-        </div>
-      </div>
-      
-      <!-- Mempool Stats -->
-      <div class="status-section">
-        <h3>Mempool Information</h3>
-        <div class="status-item">
-          <span class="status-label">Transactions:</span>
-          <span class="status-value">${formatNumber(mempool.transactionCount || 0)}</span>
-        </div>
-        <div class="status-item">
-          <span class="status-label">Total Size:</span>
-          <span class="status-value">${formatBytes(mempool.totalSize || 0)}</span>
-        </div>
-        <div class="status-item">
-          <span class="status-label">Oldest TX Age:</span>
-          <span class="status-value">${formatDuration(mempool.oldestTxAge)}</span>
-        </div>
-        ${mempool.averageFeeRate > 0 ? `
-        <div class="status-item">
-          <span class="status-label">Avg Fee Rate:</span>
-          <span class="status-value">${(mempool.averageFeeRate / 1e8).toFixed(8)} KAS</span>
-        </div>
-        ` : ''}
-      </div>
-      
-      <!-- Fee Estimates -->
-      ${mempool.feeRates && (mempool.feeRates.high || mempool.feeRates.normal || mempool.feeRates.low) ? `
-      <div class="status-section">
-        <h3>Fee Estimates</h3>
-        ${mempool.feeRates.high ? `
-        <div class="status-item">
-          <span class="status-label">High Priority:</span>
-          <span class="status-value">${mempool.feeRates.high} sompi/byte</span>
-        </div>
-        ` : ''}
-        ${mempool.feeRates.normal ? `
-        <div class="status-item">
-          <span class="status-label">Normal:</span>
-          <span class="status-value">${mempool.feeRates.normal} sompi/byte</span>
-        </div>
-        ` : ''}
-        ${mempool.feeRates.low ? `
-        <div class="status-item">
-          <span class="status-label">Low Priority:</span>
-          <span class="status-value">${mempool.feeRates.low} sompi/byte</span>
-        </div>
-        ` : ''}
-      </div>
-      ` : ''}
+      ${renderConnectionStatus(s)}
+      ${renderNetworkInfo(s)}
+      ${renderBlockDagStats(s)}
+      ${renderMempoolStats(mempool)}
+      ${renderFeeEstimates(mempool)}
     </div>
   `;
 }
@@ -2822,17 +5354,6 @@ async function refreshWorkersDashboard() {
       
       const blocksFound = miner.blocksFound || 0;
       
-      // Format hashrate helper
-      function formatHashrate(h) {
-        if (!h || h === 0) return '0 H/s';
-        if (h < 1000) return `${h.toFixed(2)} H/s`;
-        if (h < 1000000) return `${(h / 1000).toFixed(2)} KH/s`;
-        if (h < 1000000000) return `${(h / 1000000).toFixed(2)} MH/s`;
-        const gh = h / 1000000000;
-        if (gh >= 1000) return `${(gh / 1000).toFixed(2)} TH/s`;
-        return `${gh.toFixed(2)} GH/s`;
-      }
-      
       const hashrate = miner.hashrateFormatted || (miner.hashrate ? formatHashrate(miner.hashrate) : '0 H/s');
       
       return `
@@ -2991,16 +5512,7 @@ function formatNumber(num) {
   return num.toFixed(2);
 }
 
-// Format hashrate
-function formatHashrate(hashrate) {
-  if (hashrate >= 1e12) return (hashrate / 1e12).toFixed(2) + ' TH/s';
-  if (hashrate >= 1e9) return (hashrate / 1e9).toFixed(2) + ' GH/s';
-  if (hashrate >= 1e6) return (hashrate / 1e6).toFixed(2) + ' MH/s';
-  if (hashrate >= 1e3) return (hashrate / 1e3).toFixed(2) + ' KH/s';
-  return hashrate.toFixed(2) + ' H/s';
-}
-
-// Convert hashrate to H/s
+// Convert hashrate to H/s (from services/mining-calculator.js)
 function convertHashrateToHashes(value, unit) {
   const multipliers = {
     'H/s': 1,
@@ -3202,7 +5714,7 @@ function showBlockNotification(blockData) {
           <span class="block-icon">⛏️</span>
           <span>Block Found!</span>
         </div>
-        <button class="block-notification-close" onclick="this.closest('.block-notification').remove(); if(window.activeBlockNotification === this.closest('.block-notification')) window.activeBlockNotification = null; processBlockNotificationQueue();">&times;</button>
+        <button class="block-notification-close">&times;</button>
       </div>
       <div class="block-notification-body">
         <div class="block-info-row">
@@ -3227,6 +5739,18 @@ function showBlockNotification(blockData) {
   `;
   
   container.appendChild(notification);
+  
+  // Attach close button event listener
+  const closeBtn = notification.querySelector('.block-notification-close');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      notification.remove();
+      if (activeBlockNotification === notification) {
+        activeBlockNotification = null;
+      }
+      processBlockNotificationQueue();
+    });
+  }
   
   // Animate in
   setTimeout(() => {

@@ -58,6 +58,12 @@ export default class Api extends Server {
       },
       '/miner/update-threshold': {
         post: async (body) => this.updatePaymentThreshold(body.address, body.threshold, body.verificationIP)
+      },
+      '/admin/cleanup-database': {
+        post: async (body) => this.cleanupDatabase(body.options || {})
+      },
+      '/admin/settle-and-cleanup': {
+        post: async () => this.settlePayoutAndCleanup()
       }
     }, port)
 
@@ -198,9 +204,12 @@ export default class Api extends Server {
         paid: b.paid ?? false
       })),
       payments: payments.map(p => ({
-        hash: p.hash,
+        id: p.id,
+        txId: p.txId,
         amount: p.amount,
-        timestamp: p.timestamp
+        status: p.status,
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt
       }))
     }
   }
@@ -398,11 +407,14 @@ export default class Api extends Server {
       poolHashrate,
       poolHashrateFormatted: formatHashrate(poolHashrate),
       recentPayments: recentPayments.map(p => ({
-        hash: p.hash,
+        id: p.id,
+        txId: p.txId,
         address: p.address,
         amount: p.amount,
         amountKAS: (BigInt(p.amount) / 100000000n).toString(),
-        timestamp: p.timestamp
+        status: p.status,
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt
       }))
     }
   }
@@ -485,12 +497,15 @@ export default class Api extends Server {
       const amountSompi = typeof amount === 'string' ? BigInt(amount) : BigInt(Math.round(parseFloat(amount.toString()) * 100000000))
       
       // Record payment in database
-      this.database.addPayment({
-        hash: txHash,
+      const paymentRecord = this.database.createPaymentRecord({
+        id: txHash,
         address: addressWithoutPrefix,
-        amount: amountSompi.toString(),
-        timestamp: Date.now()
+        amount: amountSompi,
+        status: 'confirmed', // Manually recorded payments are assumed confirmed
+        txId: txHash,
+        notes: 'Manually recorded via API'
       })
+      this.database.addPayment(paymentRecord)
       
       // Mark blocks as paid
       const blocks = this.database.getBlocksByAddress(addressWithoutPrefix, 100)
@@ -967,6 +982,54 @@ export default class Api extends Server {
         totalAmount: '0',
         totalAmountKAS: '0',
         txHashes: [],
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
+  }
+
+  private async cleanupDatabase(options: any = {}) {
+    if (!this.pool) {
+      return { success: false, error: 'Pool instance not available' }
+    }
+
+    try {
+      const result = await this.pool.cleanupDatabase(options)
+      return {
+        success: result.success,
+        blocksRemoved: result.blocksRemoved,
+        balancesReset: result.balancesReset,
+        error: result.error
+      }
+    } catch (error) {
+      console.error('[API] Error cleaning up database:', error)
+      return {
+        success: false,
+        blocksRemoved: 0,
+        balancesReset: 0,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
+  }
+
+  private async settlePayoutAndCleanup() {
+    if (!this.pool) {
+      return { success: false, error: 'Pool instance not available' }
+    }
+
+    try {
+      const result = await this.pool.settlePayoutAndCleanup()
+      return {
+        ...result,
+        partialPayment: result.partialPayment ? {
+          amount: result.partialPayment.amount.toString(),
+          amountKAS: (Number(result.partialPayment.amount) / 100000000).toFixed(8),
+          txHash: result.partialPayment.txHash
+        } : undefined
+      }
+    } catch (error) {
+      console.error('[API] Error settling payout and cleaning up:', error)
+      return {
+        success: false,
         error: error instanceof Error ? error.message : String(error)
       }
     }

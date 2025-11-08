@@ -429,10 +429,20 @@ export default class Stratum extends EventEmitter {
     }
   }
 
-  dump () {
-    const contributions = Array.from(this.contributions.values())
-    this.contributions.clear()
+  // Get contributions without clearing (used when recording blocks)
+  getContributions() {
+    return Array.from(this.contributions.values())
+  }
 
+  // Clear contributions after they've been recorded for a block
+  clearContributions() {
+    this.contributions.clear()
+  }
+
+  // Legacy dump method - now calls getContributions (kept for backwards compatibility)
+  dump () {
+    const contributions = this.getContributions()
+    this.clearContributions()
     return contributions
   }
 }

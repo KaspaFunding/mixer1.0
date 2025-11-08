@@ -41,6 +41,21 @@ async function main() {
     startMonitoring();
     startIntermediateMonitoring(processFinalPayout);
     
+    // Start coinjoin deposit monitoring (trusted mode)
+    const { monitorCoinjoinDeposits } = require('./lib/services/coinjoin');
+    monitorCoinjoinDeposits();
+    
+    // Start WebSocket server for zero-trust coinjoin coordination
+    try {
+      const { createCoinjoinWebSocketServer } = require('./lib/services/coinjoin-websocket');
+      const wsServer = createCoinjoinWebSocketServer(8080);
+      console.log(`[Coinjoin] WebSocket server started on port ${wsServer.port}`);
+      console.log(`[Coinjoin] WebSocket URL: ws://localhost:${wsServer.port}/ws/coinjoin`);
+    } catch (error) {
+      console.error('[Coinjoin] Error starting WebSocket server:', error.message);
+      console.log('[Coinjoin] WebSocket server is optional - coinjoin will work without it');
+    }
+    
     // Create CLI interface
     createCLI();
   } catch (err) {

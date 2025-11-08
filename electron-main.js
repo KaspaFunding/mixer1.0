@@ -13,10 +13,19 @@ const { getNodeMode, setNodeMode } = require('./lib/settings');
 const { createSession, getSession, getAllSessions } = require('./lib/session-manager');
 const { deleteSession } = require('./lib/database');
 const { checkNodeStatus } = require('./lib/rpc-client');
-const { importPrivateKey, importMnemonic, generateAddressesFromKPUB, detectKPUBFormat, detectWalletType, getWalletInfo, getWalletBalance, getWalletTransactionHistory, estimateTransactionFee, sendFromWallet, removeWallet, getAddressBook, addAddressToBook, updateAddressInBook, removeAddressFromBook } = require('./lib/wallet');
+const { importPrivateKey, importMnemonic, generateAddressesFromKPUB, detectKPUBFormat, detectWalletType, getWalletInfo, getWalletBalance, getWalletTransactionHistory, estimateTransactionFee, sendFromWallet, removeWallet, getAddressBook, addAddressToBook, updateAddressInBook, removeAddressFromBook, hasMatchingUtxo, createMatchingUtxo, waitForUtxoConfirmation } = require('./lib/wallet');
 const { kaspa, KASPA_NETWORK } = require('./lib/config');
 const { startMonitoring, startIntermediateMonitoring } = require('./lib/monitor');
 const { processFinalPayout } = require('./lib/payout');
+const {
+  createCoinjoinSession,
+  getAllCoinjoinSessions,
+  getCoinjoinSessionsByStatus,
+  getCoinjoinStats,
+  revealUtxosForCoinjoin,
+  buildZeroTrustCoinjoinTransaction,
+  monitorCoinjoinDeposits
+} = require('./lib/services/coinjoin');
 
 let mainWindow = null;
 let poolProcess = null;
@@ -373,11 +382,22 @@ app.whenReady().then(async () => {
     console.log('[Electron] Starting monitoring loops...');
     startMonitoring();
     startIntermediateMonitoring(processFinalPayout);
+    monitorCoinjoinDeposits(); // Start coinjoin deposit monitoring
     console.log('[Electron] Monitoring loops started successfully');
   } catch (error) {
     console.error('[Electron] Error starting monitoring:', error);
     console.error('[Electron] Monitoring error stack:', error.stack);
     // Continue anyway - monitoring might start later
+  }
+  
+  // Start WebSocket server for zero-trust coinjoin coordination
+  try {
+    const { createCoinjoinWebSocketServer } = require('./lib/services/coinjoin-websocket');
+    const wsServer = createCoinjoinWebSocketServer(8080);
+    console.log(`[Electron] Coinjoin WebSocket server started on port ${wsServer.port}`);
+  } catch (error) {
+    console.error('[Electron] Error starting WebSocket server:', error);
+    // Continue anyway - WebSocket is optional
   }
   
   createWindow();
@@ -1527,6 +1547,153 @@ ipcMain.handle('session:export-keys', async (event, sessionId) => {
   }
 });
 
+// Coinjoin IPC handlers
+ipcMain.handle('coinjoin:create', async (event, { destinationAddress, zeroTrustMode, userUtxos, poolWalletAddress, poolPrivateKey }) => {
+  try {
+    const session = await createCoinjoinSession(destinationAddress, {
+      zeroTrustMode: zeroTrustMode || false,
+      userUtxos: userUtxos || null,
+      poolWalletAddress: poolWalletAddress || null,
+      poolPrivateKey: poolPrivateKey || null
+    });
+    return session;
+  } catch (err) {
+    throw new Error(`Failed to create coinjoin session: ${err.message}`);
+  }
+});
+
+ipcMain.handle('coinjoin:get', async (event, sessionId) => {
+  try {
+    const session = await getSession(sessionId);
+    if (!session || session.type !== 'coinjoin') {
+      return null;
+    }
+    // Remove sensitive data
+    const { depositPrivateKey, poolPrivateKey, ...safeSession } = session;
+    return safeSession;
+  } catch (err) {
+    throw new Error(`Failed to get coinjoin session: ${err.message}`);
+  }
+});
+
+ipcMain.handle('coinjoin:list', async () => {
+  try {
+    const sessions = await getAllCoinjoinSessions();
+    // Remove sensitive data
+    return sessions.map(({ sessionId, session }) => {
+      const { depositPrivateKey, poolPrivateKey, ...safeSession } = session;
+      return { sessionId, session: safeSession };
+    });
+  } catch (err) {
+    throw new Error(`Failed to list coinjoin sessions: ${err.message}`);
+  }
+});
+
+ipcMain.handle('coinjoin:stats', async () => {
+  try {
+    return await getCoinjoinStats();
+  } catch (err) {
+    throw new Error(`Failed to get coinjoin stats: ${err.message}`);
+  }
+});
+
+ipcMain.handle('coinjoin:reveal', async (event, { sessionId, revealedUtxos, destinationAddress }) => {
+  try {
+    return await revealUtxosForCoinjoin(sessionId, revealedUtxos, destinationAddress);
+  } catch (err) {
+    throw new Error(`Failed to reveal UTXOs: ${err.message}`);
+  }
+});
+
+ipcMain.handle('coinjoin:build', async (event, { sessionIds }) => {
+  try {
+    return await buildZeroTrustCoinjoinTransaction(sessionIds);
+  } catch (err) {
+    throw new Error(`Failed to build transaction: ${err.message}`);
+  }
+});
+
+ipcMain.handle('coinjoin:sign', async (event, { sessionId, transactionData, privateKeyHex }) => {
+  try {
+    const { signCoinjoinInputs } = require('./lib/services/coinjoin');
+    return await signCoinjoinInputs(sessionId, transactionData, privateKeyHex);
+  } catch (err) {
+    const errorMsg = err.message || err.toString() || String(err) || 'Unknown error';
+    console.error('[coinjoin:sign] Error details:', {
+      message: err.message,
+      stack: err.stack,
+      name: err.name,
+      raw: err
+    });
+    throw new Error(`Failed to sign inputs: ${errorMsg}`);
+  }
+});
+
+ipcMain.handle('coinjoin:submit', async (event, { transactionData, allSignatures }) => {
+  try {
+    const { submitSignedCoinjoinTransaction } = require('./lib/services/coinjoin');
+    return await submitSignedCoinjoinTransaction(transactionData, allSignatures);
+  } catch (err) {
+    const errorMsg = err.message || err.toString() || String(err) || 'Unknown error';
+    console.error('[coinjoin:submit] Error details:', {
+      message: err.message,
+      stack: err.stack,
+      name: err.name,
+      raw: err
+    });
+    throw new Error(`Failed to submit transaction: ${errorMsg}`);
+  }
+});
+
+ipcMain.handle('coinjoin:store-signatures', async (event, { transactionData, signatures }) => {
+  try {
+    const { storeCoinjoinSignatures } = require('./lib/services/coinjoin');
+    const txHash = await storeCoinjoinSignatures(transactionData, signatures);
+    return { success: true, txHash };
+  } catch (err) {
+    throw new Error(`Failed to store signatures: ${err.message}`);
+  }
+});
+
+ipcMain.handle('coinjoin:get-signatures', async (event, { transactionData }) => {
+  try {
+    const { getCoinjoinSignatures } = require('./lib/services/coinjoin');
+    const signatures = await getCoinjoinSignatures(transactionData);
+    return { success: true, signatures };
+  } catch (err) {
+    throw new Error(`Failed to get signatures: ${err.message}`);
+  }
+});
+
+ipcMain.handle('coinjoin:ws:info', async () => {
+  try {
+    const { getWebSocketServerInfo } = require('./lib/services/coinjoin-websocket');
+    return getWebSocketServerInfo();
+  } catch (err) {
+    return { running: false, error: err.message };
+  }
+});
+
+ipcMain.handle('coinjoin:ws:start', async (event, { port = 8080 }) => {
+  try {
+    const { createCoinjoinWebSocketServer } = require('./lib/services/coinjoin-websocket');
+    const server = createCoinjoinWebSocketServer(port);
+    return { success: true, port: server.port, url: `ws://localhost:${server.port}/ws/coinjoin` };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('coinjoin:ws:stop', async () => {
+  try {
+    const { stopCoinjoinWebSocketServer } = require('./lib/services/coinjoin-websocket');
+    stopCoinjoinWebSocketServer();
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // IPC Handlers - Wallet Management
 ipcMain.handle('wallet:import', async (event, privateKeyHex) => {
   try {
@@ -1582,6 +1749,217 @@ ipcMain.handle('wallet:info', () => {
   }
 });
 
+ipcMain.handle('wallet:getPrivateKey', () => {
+  try {
+    const { getWalletPrivateKey } = require('./lib/wallet');
+    const privateKey = getWalletPrivateKey();
+    if (!privateKey) {
+      return { success: false, error: 'No wallet imported' };
+    }
+    return { success: true, privateKey };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('wallet:get-utxos', async (event, { address }) => {
+  try {
+    if (!address) {
+      throw new Error('Address is required');
+    }
+    
+    console.log('[wallet:get-utxos] Fetching UTXOs for address:', address);
+    
+    const { getRpcClient } = require('./lib/rpc-client');
+    let rpc;
+    try {
+      rpc = await getRpcClient();
+    } catch (rpcErr) {
+      console.error('[wallet:get-utxos] RPC client error:', rpcErr);
+      throw new Error(`RPC connection failed: ${rpcErr.message || rpcErr.toString()}`);
+    }
+    
+    if (!rpc) {
+      throw new Error('RPC client not available');
+    }
+    
+    // RPC actually requires the full address WITH kaspa: prefix
+    // Don't strip it - use the address as-is
+    const addressToUse = address;
+    
+    if (!addressToUse) {
+      throw new Error('Invalid address format');
+    }
+    
+    console.log('[wallet:get-utxos] Using address:', addressToUse);
+    
+    let result;
+    try {
+      // Use full address with kaspa: prefix (RPC expects it)
+      result = await rpc.getUtxosByAddresses({ addresses: [addressToUse] });
+      console.log('[wallet:get-utxos] RPC result type:', typeof result);
+      console.log('[wallet:get-utxos] RPC result keys:', result ? Object.keys(result) : 'null');
+      if (result && result.entries) {
+        console.log('[wallet:get-utxos] Result.entries length:', result.entries.length);
+      }
+    } catch (rpcCallErr) {
+      // RPC might throw a string instead of Error object
+      const errorStr = typeof rpcCallErr === 'string' 
+        ? rpcCallErr 
+        : (rpcCallErr?.message || rpcCallErr?.toString?.() || String(rpcCallErr) || 'Unknown RPC error');
+      
+      console.error('[wallet:get-utxos] RPC call error:', rpcCallErr);
+      console.error('[wallet:get-utxos] RPC call error string:', errorStr);
+      console.error('[wallet:get-utxos] RPC call error type:', typeof rpcCallErr);
+      console.error('[wallet:get-utxos] RPC call error details:', {
+        message: rpcCallErr?.message,
+        name: rpcCallErr?.name,
+        stack: rpcCallErr?.stack,
+        toString: rpcCallErr?.toString?.(),
+        valueOf: rpcCallErr?.valueOf?.(),
+        raw: rpcCallErr
+      });
+      
+      // If it's an address validation error, try without prefix as fallback
+      if (errorStr.includes('address') || errorStr.includes('invalid') || errorStr.includes('prefix')) {
+        const cleanAddress = address.startsWith('kaspa:') ? address.substring(6) : address;
+        console.log('[wallet:get-utxos] Trying with clean address (without kaspa: prefix)');
+        try {
+          result = await rpc.getUtxosByAddresses({ addresses: [cleanAddress] });
+          console.log('[wallet:get-utxos] Success with clean address format');
+        } catch (retryErr) {
+          const retryErrorStr = typeof retryErr === 'string' 
+            ? retryErr 
+            : (retryErr?.message || retryErr?.toString?.() || String(retryErr));
+          throw new Error(`RPC call failed: ${retryErrorStr}`);
+        }
+      } else {
+        throw new Error(`RPC call failed: ${errorStr}`);
+      }
+    }
+    
+    if (!result) {
+      console.log('[wallet:get-utxos] No result returned from RPC');
+      return [];
+    }
+    
+    // Handle different response formats and serialize WASM objects properly
+    let entries = [];
+    
+    if (result.entries && Array.isArray(result.entries)) {
+      console.log('[wallet:get-utxos] Found', result.entries.length, 'UTXOs in result.entries');
+      entries = result.entries;
+    } else if (Array.isArray(result)) {
+      console.log('[wallet:get-utxos] Result is array with', result.length, 'items');
+      entries = result;
+    } else {
+      console.log('[wallet:get-utxos] Unexpected result format, returning empty array');
+      return [];
+    }
+    
+    // Serialize WASM objects to plain JavaScript objects for IPC
+    // WASM objects have a toJSON() method that returns plain objects
+    const serializedUtxos = entries.map(utxo => {
+      try {
+        // Check if it's a WASM object with toJSON method
+        if (utxo && typeof utxo.toJSON === 'function') {
+          const jsonObj = utxo.toJSON();
+          
+          // The toJSON() might return nested WASM objects, so we need to recursively serialize
+          const serializeValue = (value) => {
+            if (value === null || value === undefined) {
+              return value;
+            }
+            
+            // If it's a WASM object, call toJSON recursively
+            if (value && typeof value.toJSON === 'function') {
+              return serializeValue(value.toJSON());
+            }
+            
+            // If it's a bigint, convert to string
+            if (typeof value === 'bigint') {
+              return value.toString();
+            }
+            
+            // If it's an array, serialize each item
+            if (Array.isArray(value)) {
+              return value.map(item => serializeValue(item));
+            }
+            
+            // If it's an object, serialize each property
+            if (typeof value === 'object') {
+              const serialized = {};
+              for (const key in value) {
+                if (value.hasOwnProperty(key)) {
+                  serialized[key] = serializeValue(value[key]);
+                }
+              }
+              return serialized;
+            }
+            
+            // Primitive value, return as-is
+            return value;
+          };
+          
+          return serializeValue(jsonObj);
+        }
+        
+        // If it's already a plain object, serialize it properly
+        const serializePlain = (obj) => {
+          const serialized = {};
+          for (const key in obj) {
+            if (obj.hasOwnProperty(key)) {
+              const value = obj[key];
+              if (typeof value === 'bigint') {
+                serialized[key] = value.toString();
+              } else if (value && typeof value === 'object' && typeof value.toJSON === 'function') {
+                serialized[key] = serializePlain(value.toJSON());
+              } else if (Array.isArray(value)) {
+                serialized[key] = value.map(item => 
+                  item && typeof item.toJSON === 'function' ? serializePlain(item.toJSON()) : item
+                );
+              } else {
+                serialized[key] = value;
+              }
+            }
+          }
+          return serialized;
+        };
+        
+        return serializePlain(utxo);
+      } catch (e) {
+        console.error('[wallet:get-utxos] Error serializing UTXO:', e);
+        // Fallback: try to extract at least basic properties
+        return {
+          outpoint: utxo.outpoint ? {
+            transactionId: String(utxo.outpoint.transactionId || ''),
+            index: Number(utxo.outpoint.index || 0)
+          } : null,
+          amount: utxo.amount ? String(utxo.amount) : null
+        };
+      }
+    });
+    
+    if (serializedUtxos.length > 0) {
+      console.log('[wallet:get-utxos] First serialized UTXO:', JSON.stringify(serializedUtxos[0], null, 2));
+    }
+    
+    return serializedUtxos;
+  } catch (err) {
+    console.error('[wallet:get-utxos] Caught error:', err);
+    console.error('[wallet:get-utxos] Error details:', {
+      message: err.message,
+      name: err.name,
+      stack: err.stack,
+      toString: err.toString(),
+      err: err
+    });
+    
+    const errorMessage = err.message || err.toString() || String(err) || 'Unknown error';
+    throw new Error(`Failed to get UTXOs: ${errorMessage}`);
+  }
+});
+
 ipcMain.handle('wallet:balance', async () => {
   try {
     const balance = await getWalletBalance();
@@ -1623,6 +2001,42 @@ ipcMain.handle('wallet:send', async (event, { address, amountKAS }) => {
   try {
     const result = await sendFromWallet(address, amountKAS);
     return { success: true, result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// IPC Handlers - UTXO Preparation
+ipcMain.handle('wallet:has-matching-utxo', async (event, { targetAmountSompi, tolerancePercent, excludeUtxos }) => {
+  try {
+    const targetAmount = BigInt(String(targetAmountSompi));
+    const tolerance = tolerancePercent || 10;
+    const exclude = excludeUtxos || [];
+    const result = await hasMatchingUtxo(targetAmount, tolerance, exclude);
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('wallet:create-matching-utxo', async (event, { targetAmountSompi, excludeUtxos }) => {
+  try {
+    const targetAmount = BigInt(String(targetAmountSompi));
+    const exclude = excludeUtxos || [];
+    const result = await createMatchingUtxo(targetAmount, exclude);
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('wallet:wait-for-utxo', async (event, { targetAmountSompi, timeoutMs, pollIntervalMs, createdTxId, excludeUtxos }) => {
+  try {
+    const targetAmount = BigInt(String(targetAmountSompi));
+    const timeout = timeoutMs || 60000;
+    const pollInterval = pollIntervalMs || 2000;
+    const result = await waitForUtxoConfirmation(targetAmount, timeout, pollInterval, createdTxId || null, excludeUtxos || []);
+    return { success: true, ...result };
   } catch (error) {
     return { success: false, error: error.message };
   }

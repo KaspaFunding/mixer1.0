@@ -1465,15 +1465,19 @@ input[type="password"]:focus {
 .modal .modal-content {
   background: rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(30px);
-  padding: 2rem;
+  padding: 0;
   border-radius: 20px;
-  width: 420px;
+  width: 520px;
   max-width: calc(100% - 2rem);
+  max-height: 90vh;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(112, 199, 186, 0.2);
   border: 1px solid rgba(112, 199, 186, 0.2);
   transition: all 0.3s ease;
   color: var(--text-primary);
   animation: slideUp 0.3s ease;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 @keyframes slideUp {
@@ -1670,7 +1674,35 @@ input[type="password"]:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 1rem;
+  padding: 1.5rem 2rem;
+  border-bottom: 1px solid rgba(112, 199, 186, 0.1);
+  flex-shrink: 0;
+}
+
+.modal .modal-body {
+  padding: 1.5rem 2rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+  min-height: 0;
+}
+
+.modal .modal-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.modal .modal-body::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+.modal .modal-body::-webkit-scrollbar-thumb {
+  background: rgba(112, 199, 186, 0.3);
+  border-radius: 4px;
+}
+
+.modal .modal-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(112, 199, 186, 0.5);
 }
 
 .qr-container {

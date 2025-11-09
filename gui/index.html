@@ -89,131 +89,129 @@
           <button class="modal-close" id="close-coinjoin-modal">&times;</button>
         </div>
         <div class="modal-body" id="coinjoin-modal-content">
-          <form id="coinjoin-create-form">
-            <!-- Step 1: Amount -->
-            <div class="form-group" style="margin-bottom: 1.5rem;">
-              <label for="coinjoin-amount" style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; font-weight: 600;">
-                <span>Step 1: Amount to Mix</span>
-                <span style="background: var(--kaspa-primary); color: white; padding: 0.125rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 500;">Required</span>
-              </label>
-              <div style="display: flex; gap: 0.5rem; align-items: flex-start;">
-                <input type="number" id="coinjoin-amount" class="form-control" placeholder="1.0" step="0.00000001" min="1" value="1" required style="flex: 1;">
-                <span style="padding: 0.75rem 0.5rem; color: var(--text-secondary); font-size: 0.875rem; white-space: nowrap;">KAS</span>
+          <form id="coinjoin-create-form" class="coinjoin-modal">
+            <section class="modal-step">
+              <div class="modal-step-header">
+                <span class="step-index">1</span>
+                <div class="modal-step-title">
+                  <h3>Amount to Mix</h3>
+                  <p>All 10 participants must contribute the exact same amount. Default contribution is 1.00000000 KAS.</p>
+                </div>
+                <span class="badge-required">Required</span>
               </div>
-              <small id="coinjoin-amount-help" style="color: var(--text-secondary); font-size: 0.8125rem; margin-top: 0.25rem; display: block;">Minimum: 1 KAS</small>
-              <small id="coinjoin-amount-zerotrust-note" style="display: none; color: var(--kaspa-primary); font-size: 0.8125rem; margin-top: 0.5rem; display: block; padding: 0.5rem; background: rgba(112, 199, 186, 0.1); border-left: 3px solid var(--kaspa-primary); border-radius: 4px;">
-                💡 When you click "Use My Wallet", the system will automatically find or create a UTXO matching this exact amount.
-              </small>
-            </div>
+              <div class="modal-step-body">
+                <div class="input-row">
+                  <input type="number" id="coinjoin-amount" class="form-control" placeholder="1.0" step="0.00000001" min="1" value="1" required>
+                  <span class="kas-suffix">KAS</span>
+                </div>
+                <small id="coinjoin-amount-help" class="helper-text">Minimum entry: 1 KAS</small>
+                <small id="coinjoin-amount-zerotrust-note" class="info-banner" style="display: none;">
+                  💡 When you click "Use My Wallet", the system will automatically find or create a UTXO matching this exact amount.
+                </small>
+              </div>
+            </section>
 
-            <!-- Step 2: Destination Address -->
-            <div class="form-group" style="margin-bottom: 1.5rem;">
-              <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; font-weight: 600;">
-                <span>Step 2: Destination Address</span>
-                <span style="background: var(--kaspa-primary); color: white; padding: 0.125rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 500;">Required</span>
-                <button type="button" id="coinjoin-destination-use-wallet" class="btn btn-sm btn-primary" style="padding: 0.375rem 0.75rem; font-size: 0.8125rem; margin-left: auto;">✨ Use My Wallet</button>
-              </label>
-              <input type="text" id="coinjoin-destination" class="form-control" placeholder="kaspa:qz..." required>
-              <small class="helper-text" style="margin-top: 0.25rem; display: block; color: var(--text-secondary); font-size: 0.8125rem;">Where you'll receive the mixed coins after the coinjoin completes</small>
-            </div>
-            <div id="coinjoin-zerotrust-fields">
-              <!-- Step 3: UTXO Setup -->
-              <div style="margin-bottom: 1.5rem;">
-                <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; font-weight: 600; font-size: 1rem;">
-                  <span>Step 3: UTXO Setup</span>
-                  <span style="background: var(--kaspa-primary); color: white; padding: 0.125rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 500;">Required</span>
-                </label>
-              
-              <!-- Simplified Step-by-Step Flow -->
-              <div style="background: linear-gradient(135deg, rgba(112, 199, 186, 0.1) 0%, rgba(73, 234, 203, 0.1) 100%); border: 1px solid rgba(112, 199, 186, 0.3); border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem;">
-                <h3 style="margin: 0 0 1rem 0; color: var(--kaspa-primary); font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem;">
-                  <span>🚀</span>
-                  <span>Quick Start: Automated UTXO Setup</span>
-                </h3>
-                <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
-                  <div style="flex: 1; min-width: 200px;">
-                    <p style="margin: 0 0 0.75rem 0; color: var(--kaspa-primary); font-size: 0.9375rem; line-height: 1.6;">
-                      <strong>✨ Recommended:</strong> Click "Use My Wallet" below to automatically:
-                    </p>
-                    <ul style="margin: 0; padding-left: 1.25rem; color: var(--kaspa-primary); font-size: 0.875rem; line-height: 1.8;">
-                      <li>Check for existing UTXO matching your amount</li>
-                      <li>Create a fresh UTXO if needed</li>
-                      <li>Wait for confirmation</li>
-                      <li>Auto-populate the form</li>
-                    </ul>
-                  </div>
-                  <div style="flex: 0 0 auto;">
-                    <button type="button" id="zerotrust-fetch-wallet-btn" class="btn btn-primary" style="padding: 0.75rem 1.5rem; font-size: 1rem; font-weight: 600; white-space: nowrap;">
-                      ✨ Use My Wallet
-                    </button>
-                  </div>
+            <section class="modal-step">
+              <div class="modal-step-header">
+                <span class="step-index">2</span>
+                <div class="modal-step-title">
+                  <h3>Destination Address</h3>
+                  <p>Where your mixed funds will land once the zero-trust transaction succeeds.</p>
                 </div>
-                <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid rgba(112, 199, 186, 0.2);">
-                  <button type="button" id="zerotrust-manual-toggle" class="btn btn-secondary btn-sm" style="padding: 0.5rem 1rem; font-size: 0.875rem;">
-                    📝 Or enter UTXOs manually
-                  </button>
+                <span class="badge-required">Required</span>
+              </div>
+              <div class="modal-step-body">
+                <div class="input-with-action">
+                  <input type="text" id="coinjoin-destination" class="form-control" placeholder="kaspa:qz..." required>
+                  <button type="button" id="coinjoin-destination-use-wallet" class="btn btn-primary btn-sm">✨ Use My Wallet</button>
                 </div>
+                <small class="helper-text">Choose a secure address you control. It should be different from your input UTXOs.</small>
+              </div>
+            </section>
+
+            <section class="modal-step" id="coinjoin-zerotrust-fields">
+              <div class="modal-step-header">
+                <span class="step-index">3</span>
+                <div class="modal-step-title">
+                  <h3>UTXO Setup</h3>
+                  <p>Commit the UTXOs that supply your share. You can automate the prep or paste them manually.</p>
+                </div>
+                <span class="badge-required">Required</span>
               </div>
 
-              <!-- Manual UTXO Entry (Collapsed by default) -->
-              <div id="zerotrust-manual-section" style="display: none; margin-bottom: 1.5rem;">
-                <div class="form-group" style="background: #f5f5f5; padding: 1rem; border-radius: 6px; border: 1px solid #e0e0e0;">
-                  <label style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; font-weight: 600;">
-                    <span>Manual UTXO Entry</span>
-                    <button type="button" id="zerotrust-fetch-utxos-btn" class="btn btn-sm btn-secondary" style="padding: 0.25rem 0.75rem; font-size: 0.875rem;">Fetch from Address</button>
-                  </label>
-                  
-                  <!-- Fetch UTXOs from Address -->
-                  <div id="zerotrust-fetch-section" style="display: none; background: white; padding: 0.75rem; border-radius: 4px; margin-bottom: 0.75rem; border: 1px solid #ddd;">
-                    <div class="form-group" style="margin-bottom: 0.5rem;">
-                      <label style="font-size: 0.875rem; font-weight: 500;">Enter Address:</label>
-                      <input type="text" id="zerotrust-fetch-address" class="form-control" placeholder="kaspa:qz..." style="font-size: 0.875rem;">
+              <div class="modal-step-body">
+                <div class="modal-panel">
+                  <div class="modal-panel-heading">
+                    <span class="panel-icon">🚀</span>
+                    <div>
+                      <h4>Quick Start: Automated UTXO Prep</h4>
+                      <p>Recommended for connected wallets. We’ll craft the exact UTXO, wait for confirmation, and prefill the form.</p>
                     </div>
-                    <div style="display: flex; gap: 0.5rem;">
-                      <button type="button" id="zerotrust-fetch-btn" class="btn btn-sm btn-primary">Fetch UTXOs</button>
-                      <button type="button" id="zerotrust-fetch-cancel" class="btn btn-sm btn-secondary">Cancel</button>
+                  </div>
+                  <ul class="modal-panel-list">
+                    <li>Check for an existing 1 KAS UTXO</li>
+                    <li>Create and confirm a fresh UTXO if necessary</li>
+                    <li>Populate the destination and UTXO fields automatically</li>
+                  </ul>
+                  <div class="modal-panel-actions">
+                    <button type="button" id="zerotrust-fetch-wallet-btn" class="btn btn-primary">✨ Use My Wallet</button>
+                    <button type="button" id="zerotrust-manual-toggle" class="btn btn-ghost btn-sm">📝 Enter UTXOs Manually</button>
+                  </div>
+                </div>
+
+                <div id="zerotrust-manual-section" class="manual-section" style="display: none;">
+                  <div class="manual-section-header">
+                    <div>
+                      <h4>Manual UTXO Entry</h4>
+                      <p>Paste JSON or fetch directly from a Kaspa address you control.</p>
+                    </div>
+                    <button type="button" id="zerotrust-fetch-utxos-btn" class="btn btn-secondary btn-sm">Fetch from Address</button>
+                  </div>
+
+                  <div id="zerotrust-fetch-section" class="manual-fetch" style="display: none;">
+                    <label for="zerotrust-fetch-address">Kaspa Address</label>
+                    <div class="input-with-action">
+                      <input type="text" id="zerotrust-fetch-address" class="form-control" placeholder="kaspa:qz...">
+                      <div class="manual-fetch-actions">
+                        <button type="button" id="zerotrust-fetch-btn" class="btn btn-primary btn-sm">Fetch UTXOs</button>
+                        <button type="button" id="zerotrust-fetch-cancel" class="btn btn-ghost btn-sm">Cancel</button>
+                      </div>
                     </div>
                   </div>
 
-                  <textarea id="coinjoin-utxos" class="form-control" rows="8" placeholder='Paste your UTXOs here in JSON format:\n\n[{"transactionId":"...","index":0,"amount":"100000000"}]\n\nOr use "Fetch from Address" above' style="font-family: monospace; font-size: 0.875rem;"></textarea>
-                  
-                  <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
-                    <button type="button" id="zerotrust-load-example" class="btn btn-sm" style="background: #e0e0e0; border: 1px solid #bdbdbd; padding: 0.375rem 0.75rem; font-size: 0.8125rem;">📋 Load Example</button>
-                    <small style="color: var(--text-secondary); font-size: 0.8125rem; flex: 1;">
-                      Format: <code>transactionId</code>, <code>index</code>, <code>amount</code> (in sompi - 1 KAS = 100000000)
+                  <label for="coinjoin-utxos" class="manual-textarea-label">UTXO JSON</label>
+                  <textarea id="coinjoin-utxos" name="coinjoin-utxos" class="form-control monospace" rows="8" placeholder='Paste your UTXOs here in JSON format:\n\n[{"transactionId":"...","index":0,"amount":"100000000"}]\n\nOr use "Fetch from Address" above'></textarea>
+
+                  <div class="manual-inline-actions">
+                    <button type="button" id="zerotrust-load-example" class="btn btn-ghost btn-sm">📋 Load Example</button>
+                    <small class="helper-text">
+                      Use sompi amounts (1 KAS = 100000000). Required keys: <code>transactionId</code>, <code>index</code>, <code>amount</code>.
                     </small>
                   </div>
                 </div>
-              </div>
 
-              <!-- Security Notice (Compact) -->
-              <div class="security-notice" style="background: rgba(112, 199, 186, 0.08); border: 1px solid rgba(112, 199, 186, 0.25); border-radius: 6px; padding: 0.875rem; margin-bottom: 1rem;">
-                <div style="display: flex; align-items: flex-start; gap: 0.5rem;">
-                  <span style="font-size: 1.1rem; flex-shrink: 0;">🔒</span>
-                  <div style="flex: 1;">
-                    <strong style="color: var(--kaspa-primary); font-size: 0.875rem; display: block; margin-bottom: 0.25rem;">Security Guarantees</strong>
-                    <ul style="margin: 0; padding-left: 1.25rem; color: var(--kaspa-primary); font-size: 0.8125rem; line-height: 1.6;">
-                      <li>Private keys never leave your device</li>
-                      <li>UTXOs are hidden until you reveal</li>
-                      <li>No server custody of funds</li>
-                    </ul>
+                <div class="coinjoin-advisory security">
+                  <span class="advisory-icon">🔒</span>
+                  <div>
+                    <strong>Security</strong>
+                    <p>Private keys never leave your device. Commitments hide your UTXOs until reveal time.</p>
+                  </div>
+                </div>
+
+                <div class="coinjoin-advisory warning">
+                  <span class="advisory-icon">⚠️</span>
+                  <div>
+                    <strong>Exact Match Required</strong>
+                    <p>Each participant must contribute the identical amount. The coordinator enforces an exact 1 KAS entry for zero-trust rounds.</p>
                   </div>
                 </div>
               </div>
+            </section>
 
-              <!-- Important Note (Compact) -->
-              <div style="background: rgba(255, 193, 7, 0.1); border-left: 3px solid #ff9800; padding: 0.75rem; border-radius: 4px; margin-bottom: 1rem;">
-                <strong style="color: #e65100; font-size: 0.875rem;">⚠️ Important:</strong>
-                <span style="color: #e65100; font-size: 0.8125rem; margin-left: 0.5rem;">
-                  All participants must contribute the <strong>EXACT same amount</strong> (no tolerance). The system will automatically match your amount.
-                </span>
-              </div>
-              </div>
-            </div>
-            <div class="form-group" style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(112, 199, 186, 0.1); display: flex; gap: 0.75rem; justify-content: flex-end;">
+            <footer class="coinjoin-modal-actions">
               <button type="button" class="btn btn-secondary" id="coinjoin-modal-cancel">Cancel</button>
               <button type="submit" class="btn btn-primary">Create Session</button>
-            </div>
+            </footer>
           </form>
         </div>
       </div>
@@ -361,111 +359,111 @@
 
       <!-- Coinjoin Tab -->
       <div id="coinjoin-tab" class="tab-content">
-        <!-- Enhanced Header -->
-        <div class="section-header" style="margin-bottom: 1.5rem;">
-          <div style="display: flex; align-items: center; gap: 1rem;">
-            <h2 style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
-              <span style="font-size: 1.5rem;">🔄</span>
-              <span>Coinjoin Sessions</span>
-            </h2>
-            <button id="refresh-coinjoin" class="btn btn-secondary" style="margin-left: auto;">
-              <span>🔄</span> Refresh
-            </button>
-          </div>
-        </div>
-        
-        <!-- Enhanced Stats Cards -->
-        <div class="coinjoin-stats-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
-          <div id="coinjoin-stats" class="coinjoin-stats-card" style="background: linear-gradient(135deg, rgba(112, 199, 186, 0.1) 0%, rgba(73, 234, 203, 0.1) 100%); border: 1px solid rgba(112, 199, 186, 0.3); border-radius: 12px; padding: 1.25rem;">
-            <div class="loading" style="text-align: center; padding: 1rem;">Loading statistics...</div>
-          </div>
-          
-          <div id="coinjoin-ws-status" class="coinjoin-stats-card" style="background: linear-gradient(135deg, rgba(112, 199, 186, 0.1) 0%, rgba(73, 234, 203, 0.1) 100%); border: 1px solid rgba(112, 199, 186, 0.3); border-radius: 12px; padding: 1.25rem;">
-            <div class="loading" style="text-align: center; padding: 1rem;">Loading WebSocket status...</div>
-          </div>
-        </div>
-        
-        <!-- Zero-Trust Mode -->
-        <div id="coinjoin-zerotrust-section" class="coinjoin-section active">
-          <div class="section-header" style="margin-bottom: 1.5rem; padding: 1rem; background: linear-gradient(135deg, rgba(112, 199, 186, 0.1) 0%, rgba(112, 199, 186, 0.05) 100%); border: 1px solid rgba(112, 199, 186, 0.3); border-radius: 12px;">
-            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
-              <h3 style="margin: 0; display: flex; align-items: center; gap: 0.5rem; color: var(--kaspa-primary);">
-                <span style="font-size: 1.5rem;">🛡️</span>
-                <span>Zero-Trust Coinjoin</span>
-              </h3>
-              <button id="create-zerotrust-coinjoin" class="btn btn-primary" style="padding: 0.75rem 1.5rem; font-weight: 600;">
-                ➕ Create Zero-Trust Session
-              </button>
+        <div class="coinjoin-dashboard">
+          <div class="coinjoin-dashboard-header">
+            <div class="coinjoin-dashboard-title">
+              <h2>Coinjoin Mission Control</h2>
+              <p>Coordinate zero-trust rounds, monitor readiness, and launch builds when your crew is complete.</p>
+            </div>
+            <div class="coinjoin-dashboard-actions">
+              <button id="refresh-coinjoin" class="btn btn-ghost" type="button">↻ Refresh Data</button>
+              <button id="create-zerotrust-coinjoin" class="btn btn-primary" type="button">➕ Launch Zero-Trust Session</button>
             </div>
           </div>
-          
-          <!-- Participant Guide -->
-          <div class="collapsible-section" style="margin-bottom: 1.5rem; background: rgba(112, 199, 186, 0.05); border: 1px solid rgba(112, 199, 186, 0.2); border-radius: 8px;">
-            <div class="collapsible-header" data-target="zerotrust-guide-panel" style="cursor: pointer; padding: 1rem;">
-              <h4 style="margin: 0; color: var(--kaspa-primary); display: flex; align-items: center; gap: 0.5rem;">
-                <span>📖</span>
-                <span>How to Participate in Zero-Trust Coinjoin (Quick Guide)</span>
-              </h4>
-              <span class="collapse-icon">▼</span>
+
+          <div class="coinjoin-dashboard-grid">
+            <div id="coinjoin-stats" class="coinjoin-card coinjoin-card-metrics">
+              <div class="loading">Loading mission metrics...</div>
             </div>
-            <div class="collapsible-content" id="zerotrust-guide-panel" style="padding: 1rem; border-top: 1px solid rgba(112, 199, 186, 0.2);">
-              <div style="line-height: 1.8; color: var(--text-secondary);">
-                <p style="margin-top: 0;"><strong>Step 1: Create Your Session</strong></p>
-                <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
-                  <li>Click <strong>"Create Zero-Trust Session"</strong> button</li>
-                  <li>Enter your destination address (where you want to receive mixed funds)</li>
-                  <li>Click <strong>"✨ Use My Wallet"</strong> to auto-fill from your imported wallet, or manually enter UTXOs</li>
-                  <li>Click <strong>"Create Session"</strong> - Your UTXOs are now committed (hashed)</li>
-                </ul>
-                
-                <p style="margin-top: 1rem;"><strong>Step 2: Reveal Your UTXOs</strong></p>
-                <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
-                  <li>Once your session shows <strong>"committed"</strong> status, click <strong>"✨ One-Click Reveal"</strong> (if available)</li>
-                  <li>Or click <strong>"Reveal UTXOs"</strong> to manually enter your UTXO details</li>
-                  <li>Your session status will change to <strong>"revealed"</strong></li>
-                </ul>
-                
-                <p style="margin-top: 1rem;"><strong>Step 3: Wait for Other Participants</strong></p>
-                <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
-                  <li>You need <strong>3-10 participants</strong> (including yourself) to build a coinjoin transaction</li>
-                  <li>Check the <strong>"Participants: X of 3-10"</strong> indicator on revealed sessions</li>
-                  <li>When it shows <strong>"✓ Ready to Build!"</strong>, you can proceed</li>
-                </ul>
-                
-                <p style="margin-top: 1rem;"><strong>Step 4: Build Transaction</strong></p>
-                <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
-                  <li>Click the <strong>"🔨 Build Transaction"</strong> button on any revealed session</li>
-                  <li>The system will create a transaction structure with equal outputs for all participants</li>
-                  <li><strong>Note:</strong> Each participant must sign their own inputs - this is a zero-trust system</li>
-                </ul>
-                
-                <p style="margin-top: 1rem;"><strong>Step 5: Sign Your Inputs</strong></p>
-                <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
-                  <li>When the transaction is built, click <strong>"✍️ Sign My Inputs"</strong> button</li>
-                  <li>Your private key is used <strong>locally on your device</strong> to sign - it never leaves your computer</li>
-                  <li>Wait for all participants to sign their inputs</li>
-                </ul>
-                
-                <p style="margin-top: 1rem;"><strong>Step 6: Submit Transaction</strong></p>
-                <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
-                  <li>Once all participants have signed, click <strong>"Submit Transaction"</strong></li>
-                  <li>The transaction will be broadcast to the Kaspa network</li>
-                  <li>Your mixed coins will arrive at your destination address</li>
-                </ul>
-                
-                <div style="margin-top: 1.5rem; padding: 1rem; background: rgba(112, 199, 186, 0.1); border-left: 3px solid var(--kaspa-primary); border-radius: 4px;">
-                  <strong>🔒 Security Note:</strong> Your private keys are never transmitted to the server. They stay on your device and are only used locally for signing your inputs. This is a true zero-trust system.
+            <div id="coinjoin-progress" class="coinjoin-card coinjoin-card-progress">
+              <div class="loading">Syncing participant readiness...</div>
+            </div>
+            <div id="coinjoin-ws-status" class="coinjoin-card coinjoin-card-status">
+              <div class="loading">Loading WebSocket status...</div>
+            </div>
+          </div>
+
+          <div class="coinjoin-layout">
+            <div class="coinjoin-main">
+              <div class="coinjoin-card coinjoin-card-sessions">
+                <div class="coinjoin-card-header">
+                  <div>
+                    <h3>Zero-Trust Session Board</h3>
+                    <p>Track every commitment and reveal in real time. Sessions update automatically as peers join.</p>
+                  </div>
                 </div>
-                
-                <div style="margin-top: 1.5rem; padding: 1rem; background: rgba(73, 234, 203, 0.1); border-left: 3px solid var(--kaspa-accent); border-radius: 4px;">
-                  <strong>💡 Tip:</strong> The participant count updates automatically. Refresh the page or click "Refresh" to see the latest count.
+                <div id="coinjoin-zerotrust-list" class="coinjoin-session-list sessions-list">
+                  <div class="loading">Loading zero-trust sessions...</div>
                 </div>
               </div>
             </div>
-          </div>
-          
-          <div id="coinjoin-zerotrust-list" class="coinjoin-list sessions-list">
-            <div class="loading">Loading zero-trust sessions...</div>
+            <aside class="coinjoin-sidebar">
+              <div class="coinjoin-card coinjoin-card-overview">
+                <h4>Round Checklist</h4>
+                <ul>
+                  <li><strong>Plan:</strong> Align on exact amount (1.00000000 KAS default)</li>
+                  <li><strong>Commit:</strong> Create your zero-trust session and lock in UTXOs</li>
+                  <li><strong>Reveal:</strong> Share UTXO details once 10 seats are ready</li>
+                  <li><strong>Build:</strong> Launch the transaction when the board shows “Ready”</li>
+                  <li><strong>Sign:</strong> Approve your inputs locally, then submit</li>
+                </ul>
+              </div>
+
+              <div class="coinjoin-card coinjoin-card-guide collapsible-section">
+                <div class="collapsible-header" data-target="zerotrust-guide-panel">
+                  <div>
+                    <h4>How to Run a Zero-Trust Round</h4>
+                    <p>Guided walkthrough for new operators.</p>
+                  </div>
+                  <span class="collapse-icon">▼</span>
+                </div>
+                <div class="collapsible-content" id="zerotrust-guide-panel">
+                  <div class="coinjoin-guide-steps">
+                    <div class="guide-step">
+                      <span class="step-number">1</span>
+                      <div>
+                        <strong>Create Your Session</strong>
+                        <p>Click “Launch Zero-Trust Session,” set your destination, then commit.</p>
+                      </div>
+                    </div>
+                    <div class="guide-step">
+                      <span class="step-number">2</span>
+                      <div>
+                        <strong>Prepare Inputs</strong>
+                        <p>Use “✨ Use My Wallet” for automatic UTXO prep or paste JSON manually.</p>
+                      </div>
+                    </div>
+                    <div class="guide-step">
+                      <span class="step-number">3</span>
+                      <div>
+                        <strong>Reveal at 10/10</strong>
+                        <p>Wait for the progress tracker to reach 10 participants, then reveal.</p>
+                      </div>
+                    </div>
+                    <div class="guide-step">
+                      <span class="step-number">4</span>
+                      <div>
+                        <strong>Build & Sign</strong>
+                        <p>Trigger the build, sign your inputs locally, and monitor peer signatures.</p>
+                      </div>
+                    </div>
+                    <div class="guide-step">
+                      <span class="step-number">5</span>
+                      <div>
+                        <strong>Submit</strong>
+                        <p>Broadcast once every seat signs. Your mixed KAS will land at the destination.</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="coinjoin-tip">
+                    <strong>🔒 Security Note:</strong> Keys never leave your device. Signing happens locally in the renderer.
+                  </div>
+                  <div class="coinjoin-tip">
+                    <strong>💡 Tip:</strong> Ran the CLI automation? Refresh the mission metrics to sync the dashboard.
+                  </div>
+                </div>
+              </div>
+            </aside>
           </div>
         </div>
       </div>

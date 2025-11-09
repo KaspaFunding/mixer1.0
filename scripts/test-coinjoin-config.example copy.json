@@ -1,0 +1,44 @@
+{
+  "participants": 3,
+  "amountKAS": 1.0,
+  "autoWallet": false,
+  "participants": [
+    {
+      "privateKey": "YOUR_PRIVATE_KEY_HEX_HERE",
+      "address": "kaspa:...",
+      "destinationAddress": "kaspa:...",
+      "utxos": [
+        {
+          "transactionId": "...",
+          "index": 0,
+          "amount": "100000000"
+        }
+      ]
+    },
+    {
+      "privateKey": "YOUR_PRIVATE_KEY_HEX_HERE",
+      "address": "kaspa:...",
+      "destinationAddress": "kaspa:...",
+      "utxos": [
+        {
+          "transactionId": "...",
+          "index": 0,
+          "amount": "100000000"
+        }
+      ]
+    },
+    {
+      "privateKey": "YOUR_PRIVATE_KEY_HEX_HERE",
+      "address": "kaspa:...",
+      "destinationAddress": "kaspa:...",
+      "utxos": [
+        {
+          "transactionId": "...",
+          "index": 0,
+          "amount": "100000000"
+        }
+      ]
+    }
+  ]
+}
+

@@ -61,6 +61,8 @@ let currentFilter = 'all';
 let currentSort = 'newest';
 let currentSearch = '';
 
+const ZERO_TRUST_REQUIRED_PARTICIPANTS = 10;
+
 // Helper: Render timeline for a session (from services/session-ui.js)
 function renderTimeline(session) {
   // Check if this is a coinjoin session
@@ -2930,11 +2932,17 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('coinjoin-create-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     
-    const destination = document.getElementById('coinjoin-destination').value.trim();
-    const amountInput = document.getElementById('coinjoin-amount').value.trim();
-    const poolAddress = document.getElementById('coinjoin-pool-address').value.trim();
-    const poolKey = document.getElementById('coinjoin-pool-key').value.trim();
-    const utxosInput = document.getElementById('coinjoin-utxos').value.trim();
+  const destinationInput = document.getElementById('coinjoin-destination');
+  const amountField = document.getElementById('coinjoin-amount');
+  const poolAddressField = document.getElementById('coinjoin-pool-address');
+  const poolKeyField = document.getElementById('coinjoin-pool-key');
+  const utxosField = document.getElementById('coinjoin-utxos');
+
+  const destination = destinationInput ? destinationInput.value.trim() : '';
+  const amountInput = amountField ? amountField.value.trim() : '';
+  const poolAddress = poolAddressField ? poolAddressField.value.trim() : '';
+  const poolKey = poolKeyField ? poolKeyField.value.trim() : '';
+  const utxosInput = utxosField ? utxosField.value.trim() : '';
     
     if (!destination) {
       showMessage('Destination address is required', 'error');
@@ -2944,7 +2952,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Check if trusted fields are visible (trusted mode)
     const trustedFields = document.getElementById('coinjoin-trusted-fields');
     const zeroTrustFields = document.getElementById('coinjoin-zerotrust-fields');
-    const isZeroTrustMode = trustedFields.style.display === 'none';
+
+    const isZeroTrustMode = trustedFields
+      ? trustedFields.style.display === 'none'
+      : zeroTrustFields
+        ? zeroTrustFields.style.display !== 'none'
+        : false;
     
     let amountSompi = null;
     let userUtxos = null;
@@ -3314,18 +3327,18 @@ async function renderCoinjoinSessions(sessions, containerId) {
               </div>
             ` : ''}
             ${session.zeroTrustMode && session.status === 'revealed' ? (() => {
-              const canBuild = revealedCount >= 3;
+              const canBuild = revealedCount >= ZERO_TRUST_REQUIRED_PARTICIPANTS;
               return `
               <div class="detail-row" style="background: ${canBuild ? 'rgba(112, 199, 186, 0.15)' : 'rgba(73, 234, 203, 0.1)'}; padding: 0.75rem; border-radius: 4px; margin-top: 0.5rem; border-left: 3px solid ${canBuild ? 'var(--kaspa-primary)' : 'var(--kaspa-accent)'};">
                 <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;">
                   <div>
                     <span class="detail-label" style="color: ${canBuild ? 'var(--kaspa-primary)' : 'var(--kaspa-accent)'}; font-weight: 600; font-size: 0.9rem;">Participants:</span>
-                    <span style="color: ${canBuild ? 'var(--kaspa-primary)' : 'var(--kaspa-accent)'}; font-weight: 600; margin-left: 0.25rem;">${revealedCount} of 3-10</span>
+                    <span style="color: ${canBuild ? 'var(--kaspa-primary)' : 'var(--kaspa-accent)'}; font-weight: 600; margin-left: 0.25rem;">${revealedCount} of ${ZERO_TRUST_REQUIRED_PARTICIPANTS}</span>
                   </div>
                   ${canBuild ? `
                   <span style="color: var(--kaspa-primary); font-weight: 600; font-size: 0.85rem;">✓ Ready to Build!</span>
                   ` : `
-                  <span style="color: var(--kaspa-accent); font-size: 0.85rem;">Need ${3 - revealedCount} more</span>
+                  <span style="color: var(--kaspa-accent); font-size: 0.85rem;">Need ${Math.max(ZERO_TRUST_REQUIRED_PARTICIPANTS - revealedCount, 0)} more</span>
                   `}
                 </div>
               </div>
@@ -3414,24 +3427,74 @@ async function refreshCoinjoinStats() {
   try {
     const stats = await electronAPI.coinjoin.stats();
     const statsEl = document.getElementById('coinjoin-stats');
+    const progressEl = document.getElementById('coinjoin-progress');
     if (!statsEl) return;
     
+    const totalZeroTrust = stats.zeroTrust?.total || 0;
+    const committed = stats.zeroTrust?.committed || 0;
+    const revealed = stats.zeroTrust?.revealed || 0;
+    const completed = stats.zeroTrust?.completed || 0;
+    const trustedTotal = stats.trusted?.total || 0;
+    
     statsEl.innerHTML = `
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem;">
-        <div style="text-align: center; padding: 0.75rem; background: rgba(112, 199, 186, 0.1); border-radius: 8px; border: 1px solid rgba(112, 199, 186, 0.3);">
-          <div style="font-size: 2rem; font-weight: 700; color: var(--kaspa-primary); margin-bottom: 0.5rem;">${stats.zeroTrust.committed || 0}</div>
-          <div style="font-size: 0.875rem; color: var(--text-secondary); font-weight: 500;">Committed</div>
+      <div class="coinjoin-card-title">
+        <h3>Round Metrics</h3>
+        <p>Live snapshot of zero-trust and coordinator-led activity.</p>
+      </div>
+      <div class="metric-grid">
+        <div class="metric-card">
+          <span class="metric-label">Zero-Trust Sessions</span>
+          <span class="metric-value">${totalZeroTrust}</span>
+          <span class="metric-subtext">Active and historical</span>
         </div>
-        <div style="text-align: center; padding: 0.75rem; background: rgba(73, 234, 203, 0.1); border-radius: 8px; border: 1px solid rgba(73, 234, 203, 0.3);">
-          <div style="font-size: 2rem; font-weight: 700; color: var(--kaspa-accent); margin-bottom: 0.5rem;">${stats.zeroTrust.revealed}</div>
-          <div style="font-size: 0.875rem; color: var(--text-secondary); font-weight: 500;">Revealed</div>
+        <div class="metric-card">
+          <span class="metric-label">Committed</span>
+          <span class="metric-value">${committed}</span>
+          <span class="metric-subtext">Waiting to reveal</span>
         </div>
-        <div style="text-align: center; padding: 0.75rem; background: rgba(112, 199, 186, 0.1); border-radius: 8px; border: 1px solid rgba(112, 199, 186, 0.3);">
-          <div style="font-size: 2rem; font-weight: 700; color: var(--kaspa-primary); margin-bottom: 0.5rem;">${stats.zeroTrust.completed || 0}</div>
-          <div style="font-size: 0.875rem; color: var(--text-secondary); font-weight: 500;">Completed</div>
+        <div class="metric-card">
+          <span class="metric-label">Revealed</span>
+          <span class="metric-value">${revealed}</span>
+          <span class="metric-subtext">Eligible for builds</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Completed</span>
+          <span class="metric-value">${completed}</span>
+          <span class="metric-subtext">Zero-trust rounds finalized</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Coordinator Sessions</span>
+          <span class="metric-value">${trustedTotal}</span>
+          <span class="metric-subtext">Traditional mixes in flight</span>
         </div>
       </div>
     `;
+    
+    if (progressEl) {
+      const required = typeof ZERO_TRUST_REQUIRED_PARTICIPANTS !== 'undefined' ? ZERO_TRUST_REQUIRED_PARTICIPANTS : 10;
+      const progressPercent = Math.min(100, Math.round((revealed / required) * 100));
+      const participantsNeeded = Math.max(required - revealed, 0);
+      const waitingToReveal = Math.max(committed - revealed, 0);
+      const statusText = participantsNeeded === 0 ? 'Crew ready — launch when you are.' : `${participantsNeeded} more participant${participantsNeeded === 1 ? '' : 's'} needed to reach 10.`;
+      const statusBadge = participantsNeeded === 0 ? 'Ready to build' : 'Awaiting reveals';
+      
+      progressEl.innerHTML = `
+        <div class="coinjoin-card-title">
+          <h3>Participant Readiness</h3>
+          <p>${statusText}</p>
+        </div>
+        <div class="progress-meter">
+          <div class="progress-status">
+            <span>${revealed} of ${required} participants revealed</span>
+            <strong>${statusBadge}</strong>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-bar-fill" style="width: ${progressPercent}%;"></div>
+          </div>
+          <div class="metric-subtext">Queued to reveal: ${waitingToReveal} • Completed rounds: ${completed}</div>
+        </div>
+      `;
+    }
   } catch (err) {
     console.error('Error loading coinjoin stats:', err);
   }
@@ -3539,15 +3602,14 @@ async function buildCoinjoinTransaction(sessionId) {
       session.zeroTrustMode && session.status === 'revealed'
     );
     
-    if (revealedSessions.length < 3) {
-      showMessage(`Need at least 3 revealed participants (up to 10 supported). Currently: ${revealedSessions.length}`, 'warning');
+    if (revealedSessions.length < ZERO_TRUST_REQUIRED_PARTICIPANTS) {
+      showMessage(`Need ${ZERO_TRUST_REQUIRED_PARTICIPANTS} revealed participants. Currently: ${revealedSessions.length}`, 'warning');
       return;
     }
     
-    if (revealedSessions.length > 10) {
-      showMessage(`Maximum 10 participants supported. Currently: ${revealedSessions.length}. Only the first 10 will be used.`, 'warning');
-      // Limit to first 10
-      revealedSessions = revealedSessions.slice(0, 10);
+    if (revealedSessions.length > ZERO_TRUST_REQUIRED_PARTICIPANTS) {
+      showMessage(`Only ${ZERO_TRUST_REQUIRED_PARTICIPANTS} participants are supported. Currently: ${revealedSessions.length}. Using the first ${ZERO_TRUST_REQUIRED_PARTICIPANTS}.`, 'warning');
+      revealedSessions = revealedSessions.slice(0, ZERO_TRUST_REQUIRED_PARTICIPANTS);
     }
     
     // Confirm with user
@@ -4057,38 +4119,34 @@ async function loadWebSocketServerStatus() {
     
     if (wsInfo.running) {
       wsStatusEl.innerHTML = `
-        <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
-          <div style="display: flex; align-items: center; gap: 0.5rem;">
-            <span style="width: 12px; height: 12px; background: var(--kaspa-primary); border-radius: 50%; box-shadow: 0 0 8px rgba(112, 199, 186, 0.6); animation: pulse 2s infinite;"></span>
-            <span style="font-weight: 600; color: var(--text-primary);">WebSocket Server</span>
-            <span style="color: var(--kaspa-primary); font-weight: 600;">Running</span>
-          </div>
-          <div style="flex: 1; display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.875rem;">
-            <span style="color: var(--text-secondary);">
-              <strong style="color: var(--kaspa-primary);">${wsInfo.lobbyParticipants}</strong> participants in lobby
-            </span>
-            <span style="color: var(--text-secondary);">
-              <strong style="color: var(--kaspa-primary);">${wsInfo.activeRooms}</strong> active rooms
-            </span>
-          </div>
-          <code style="font-size: 0.8125rem; background: rgba(0, 0, 0, 0.2); padding: 0.375rem 0.75rem; border-radius: 6px; color: var(--kaspa-primary);">${wsInfo.url}</code>
+        <div class="coinjoin-card-title">
+          <h3>WebSocket Bridge</h3>
+          <p>Real-time coordinator for lobby updates and signature exchange.</p>
         </div>
-        <style>
-          @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-          }
-        </style>
+        <div class="coinjoin-status-row">
+          <span class="status-indicator running"></span>
+          <div class="status-body">
+            <div class="status-title">Running</div>
+            <div class="status-subtext">
+              ${wsInfo.lobbyParticipants} in lobby • ${wsInfo.activeRooms} active room${wsInfo.activeRooms === 1 ? '' : 's'}
+            </div>
+          </div>
+          <code class="status-endpoint">${wsInfo.url}</code>
+        </div>
       `;
     } else {
       wsStatusEl.innerHTML = `
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
-          <div style="display: flex; align-items: center; gap: 0.5rem;">
-            <span style="width: 12px; height: 12px; background: #9e9e9e; border-radius: 50%;"></span>
-            <span style="font-weight: 600; color: var(--text-secondary);">WebSocket Server</span>
-            <span style="color: #9e9e9e; font-weight: 600;">Not running</span>
+        <div class="coinjoin-card-title">
+          <h3>WebSocket Bridge</h3>
+          <p>Spin up the relay to coordinate zero-trust crews.</p>
+        </div>
+        <div class="coinjoin-status-row">
+          <span class="status-indicator stopped"></span>
+          <div class="status-body">
+            <div class="status-title">Offline</div>
+            <div class="status-subtext">Start the service to enable lobby sync</div>
           </div>
-          <button class="btn btn-sm btn-primary" id="coinjoin-ws-start-btn" style="padding: 0.5rem 1rem; font-weight: 600;">▶️ Start Server</button>
+          <button class="btn btn-primary btn-sm" id="coinjoin-ws-start-btn">▶️ Start Server</button>
         </div>
       `;
       

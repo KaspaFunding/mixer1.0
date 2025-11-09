@@ -13,7 +13,7 @@ The Kaspa Mixer Standalone Edition is a desktop application that provides two po
 
 - ✅ **Complete Privacy Control**: All operations run locally on your machine
 - ✅ **Zero-Trust CoinJoin**: No need to trust a coordinator with your private keys
-- ✅ **Multi-Participant Support**: CoinJoin supports 3-10 participants per transaction
+- ✅ **Multi-Participant Support**: CoinJoin coordinates exactly 10 participants per transaction
 - ✅ **Graphical User Interface**: Modern, intuitive GUI built with Electron
 - ✅ **Command-Line Interface**: Full-featured CLI for advanced users
 - ✅ **Automated UTXO Management**: Smart UTXO creation and verification
@@ -120,12 +120,12 @@ A revolutionary privacy feature that allows multiple participants to combine the
 - **Zero Trust**: No coordinator ever sees your private keys
 - **Fairness**: All participants contribute and receive exactly the same amount
 - **Privacy**: Source and destination addresses are obscured
-- **Scalability**: Supports 3-10 participants per transaction
+- **Scalability**: Supports coordinated CoinJoin rounds with exactly 10 participants per transaction
 - **Security**: Private keys are only used locally for signing
 
 #### Requirements
 
-- **Minimum Participants**: 3
+- **Participants Required**: 10 (including the initiator)
 - **Maximum Participants**: 10
 - **Exact Amount Matching**: All inputs must be exactly equal (no tolerance)
 - **Equal Outputs**: All outputs are exactly equal
@@ -168,13 +168,13 @@ npm start
 
 #### Revealing UTXOs
 
-1. Wait for at least 3 participants to commit
+1. Wait for all 10 participants to commit
 2. Click "Reveal UTXOs" on your session
 3. The system will automatically verify amount matching
 
 #### Building Transaction
 
-1. After all participants have revealed (3-10 participants)
+1. After all 10 participants have revealed
 2. Click "Build Transaction"
 3. Review the transaction details
 4. Sign your inputs (private keys stay local)
@@ -361,7 +361,7 @@ standalone-mixer/
 
 - **Input Requirements**: All inputs must be exactly equal
 - **Output Requirements**: All outputs are exactly equal
-- **Participant Range**: 3-10 participants per transaction
+- **Participant Count**: 10 participants per transaction
 - **Fee Handling**: Any remainder from division goes to transaction fees
 - **Signature Method**: Uses `kaspa.signTransaction()` for proper signature script formatting
 
